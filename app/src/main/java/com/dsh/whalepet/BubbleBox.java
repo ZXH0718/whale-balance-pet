@@ -31,13 +31,18 @@ public class BubbleBox extends FrameLayout {
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        int width = MeasureSpec.getSize(widthMeasureSpec);
-        int height = MeasureSpec.getSize(heightMeasureSpec);
-        if (MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.EXACTLY) {
-            width = Math.max(width, getSuggestedMinimumWidth());
+        int width;
+        int height;
+        if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY) {
+            width = MeasureSpec.getSize(widthMeasureSpec);
+        } else {
+            // 悬浮窗是 WRAP_CONTENT：用 setMinimumWidth 指定的尺寸，别把整屏当成自己的尺寸
+            width = Math.max(getSuggestedMinimumWidth(), 0);
         }
-        if (MeasureSpec.getMode(heightMeasureSpec) != MeasureSpec.EXACTLY) {
-            height = Math.max(height, getSuggestedMinimumHeight());
+        if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
+            height = MeasureSpec.getSize(heightMeasureSpec);
+        } else {
+            height = Math.max(getSuggestedMinimumHeight(), 0);
         }
         int childWidth = Math.round(width * TEXT_WIDTH_RATIO);
         int childHeight = Math.round(height * TEXT_HEIGHT_RATIO);

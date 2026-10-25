@@ -1,5 +1,6 @@
 package com.dsh.whalepet;
 
+import android.animation.ValueAnimator;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,8 +9,6 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
-import android.animation.ValueAnimator;
 import android.graphics.Typeface;
 import android.graphics.drawable.AnimationDrawable;
 import android.graphics.drawable.Drawable;
@@ -28,21 +27,23 @@ import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.animation.OvershootInterpolator;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.Switch;
 import android.widget.TextView;
 
 /**
- * 前台服务：屏幕角落的鲸鱼娘 + 余额气泡。
+ * 前台服务：鲸鱼娘悬浮桌宠。
  *
- * 交互（还原 dsh-whale-widget 的按压手感）：
- *  - 按下：鲸鱼压扁 scaleY(0.88) / scaleX(1.05)，播放按压音 Ya1
- *  - 按住满 1 秒：进入摸头 —— 用原版 rua.gif 解出的 10 帧动画循环播放 + 台词 + 震动
- *  - 松手：回弹到 1:1，播放松开音 Ya2；未拖动则刷新余额
- *  - 按住满 3 秒：打开设置页
- *  - 拖动：跟手移动，松手吸附左右边缘并记住位置
+ * 结构上分开成两个悬浮窗：
+ *  - 鲸鱼窗口：尺寸恒等于鲸鱼，拖拽/贴边只动这个窗口
+ *  - 气泡窗口：独立窗口，按鲸鱼位置摆到头顶
+ * 这样气泡出现或消失都不会改变鲸鱼窗口的尺寸，鲸鱼不会因为重排而漂移。
+ *
+ * 交互：点鲸鱼或气泡刷新余额；按住 1 秒摸头；按住 3 秒弹出小设置面板；拖拽跟手并吸附左右边缘。
  */
 public class BalanceService extends Service {
 
@@ -52,15 +53,14 @@ public class BalanceService extends Service {
 
     private static final String CHANNEL_ID = "whale_pet";
     private static final int NOTIFICATION_ID = 1001;
-    private static final int EDGE_MARGIN_DP = 6;
-    /** 鲸鱼尺寸（dp）；根方块 = 鲸鱼 / WHALE_RATIO，与圆版 .dshwv-img 59.45% 一致 */
+
+    /** 鲸鱼边长（dp），另存一份给气泡按比例换算 */
     private static final int WHALE_DP = 96;
-    private static final float WHALE_RATIO = 0.5945f;
-    /** 泡泡相对鲸鱼的宽度倍数（原版是 1/0.5945 ≈ 1.68，压窄到 1.6 更好收边） */
+    /** 气泡宽 = 鲸鱼宽 × 这个倍数 */
     private static final float BUBBLE_WIDTH_FACTOR = 1.6f;
-    /** 泡泡高宽比：原版画布是 700/1026 = 0.682，压扁到 0.52 —— 字形不变，只收高度 */
+    /** 气泡高宽比（原版画布 700/1026 = 0.682，压扁到 0.52） */
     private static final float BUBBLE_HEIGHT_FACTOR = 0.52f;
-    /** 原版泡泡画布与字号比例：u = 泡泡宽 / 1026（字号仍按这个来，保证字够大） */
+    /** 原版泡泡画布宽度，字号比例 u = 气泡宽 / 1026 */
     private static final float FRAME_W = 1026f;
     private static final float FONT_LABEL_U = 66f;
     private static final float FONT_AMOUNT_U = 128f;
@@ -70,24 +70,21 @@ public class BalanceService extends Service {
     private static final float HINT_MIN_H_U = 64f;
     private static final long ROLL_MS = 700L;
 
-    /** 按住多久进入摸头 */
-    private static final int PAT_TRIGGER_MS = 1000;
-    /** 按住多久打开设置 */
-    private static final int SETTINGS_TRIGGER_MS = 3000;
-    /** 每帧时长：原版 rua.gif 每帧 2cs = 20ms */
-    private static final int PAT_FRAME_MS = 20;
-    /** 原版按压形变：SQUISH = 'scaleY(0.88) scaleX(1.05)' */
     private static final float SQUISH_SCALE_Y = 0.88f;
     private static final float SQUISH_SCALE_X = 1.05f;
     private static final int SQUISH_MS = 90;
-    /** 摸头时「冒出来」的放大倍数与上浮距离（dp） */
     private static final float PAT_SCALE = 1.18f;
     private static final int PAT_LIFT_DP = 8;
     private static final int PAT_POP_MS = 160;
+    private static final int PAT_FRAME_MS = 20;
+    private static final int PAT_TRIGGER_MS = 1000;
+    private static final int SETTINGS_TRIGGER_MS = 3000;
     private static final int LINE_MS = 2600;
-    /** 气泡停留时长（原版 BUBBLE_MS = 5000） */
     private static final long BUBBLE_MS = 5000L;
     private static final long BUBBLE_HIDE_MS = 160L;
+    /** 气泡底部压在鲸鱼头顶的重叠量 */
+    private static final int BUBBLE_OVERLAP_DP = 6;
+    private static final int EDGE_MARGIN_DP = 2;
 
     private static final int[] PAT_FRAMES = {
             R.drawable.pat_00, R.drawable.pat_01, R.drawable.pat_02, R.drawable.pat_03,
@@ -109,28 +106,30 @@ public class BalanceService extends Service {
     };
 
     private WindowManager windowManager;
-    private View overlay;
-    private BubbleBox bubbleBox;
-    private View bubbleText;
+
+    private View petView;
+    private WindowManager.LayoutParams petParams;
+    private ImageView whaleView;
+
+    private View bubbleView;
+    private WindowManager.LayoutParams bubbleParams;
+    private View bubbleTextBox;
     private TextView tvLabel;
     private TextView tvBalance;
     private TextView tvDetail;
-    private double shownTotal = Double.NaN;
-    private String shownCurrency = "CNY";
+    private boolean bubbleAttached;
     private boolean bubbleVisible;
-    private Runnable hideBubbleRunnable;
-
-    /** 长按唤出设置后，松手不要再触发别的动作 */
-    private boolean holdOpenedSettings;
-    private ImageView whaleView;
     private AnimationDrawable patAnim;
-    private WindowManager.LayoutParams params;
+
+    private View panel;
+    private WindowManager.LayoutParams panelParams;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Runnable ticker;
     private Runnable patRunnable;
     private Runnable settingsRunnable;
     private Runnable restoreLineRunnable;
+    private Runnable hideBubbleRunnable;
 
     private MediaPlayer pressSound;
     private MediaPlayer releaseSound;
@@ -138,6 +137,10 @@ public class BalanceService extends Service {
     private int touchSlop;
     private boolean refreshing;
     private boolean patting;
+    private boolean holdOpenedSettings;
+
+    private double shownTotal = Double.NaN;
+    private String shownCurrency = "CNY";
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -164,98 +167,183 @@ public class BalanceService extends Service {
             return START_NOT_STICKY;
         }
         startAsForeground();
-        if (overlay == null) {
-            showOverlay();
+        if (petView == null) {
+            showPet();
         }
         refresh();
+        showBubbleAnimated();
         scheduleTicker();
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
+        hidePanel();
         stopTicker();
         handler.removeCallbacksAndMessages(null);
         releaseSound(pressSound);
         releaseSound(releaseSound);
-        if (overlay != null && windowManager != null) {
+        detachBubble();
+        if (petView != null && windowManager != null) {
             try {
-                windowManager.removeView(overlay);
+                windowManager.removeView(petView);
             } catch (Exception ignored) {
-                // 视图已被移除
+                // 已经不在
             }
-            overlay = null;
+            petView = null;
         }
         super.onDestroy();
     }
 
-    // ── 悬浮窗 ──────────────────────────────────────────────────────────
+    // ── 鲸鱼窗口 ────────────────────────────────────────────────────────
 
-    private void showOverlay() {
+    private void showPet() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        overlay = LayoutInflater.from(this).inflate(R.layout.overlay_whale, null);
-        bubbleBox = overlay.findViewById(R.id.bubble_box);
-        bubbleText = overlay.findViewById(R.id.bubble_text);
-        tvLabel = overlay.findViewById(R.id.tv_label);
-        tvBalance = overlay.findViewById(R.id.tv_balance);
-        tvDetail = overlay.findViewById(R.id.tv_detail);
-        shownTotal = Ledger.lastTotal(this);
-        shownCurrency = Ledger.lastCurrency(this);
-        whaleView = overlay.findViewById(R.id.iv_whale);
-        if (whaleView != null) {
-            // 以顶部为轴压扁，摸头/按压时像是被从上面按住
-            whaleView.setPivotY(0f);
-        }
-        applyLook();
-        renderBalance();
-        showBubbleAnimated();
+        petView = LayoutInflater.from(this).inflate(R.layout.overlay_pet, null);
+        whaleView = petView.findViewById(R.id.iv_whale);
+        whaleView.setPivotY(0f);
+        applyPetLook();
 
-        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                : WindowManager.LayoutParams.TYPE_PHONE;
-
-        params = new WindowManager.LayoutParams(
+        petParams = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
-                type,
+                overlayWindowType(),
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.TOP | Gravity.START;
+        petParams.gravity = Gravity.TOP | Gravity.START;
 
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        DisplayMetrics metrics = screenMetrics();
+        int whale = whalePx();
         int savedX = Prefs.posX(this);
         int savedY = Prefs.posY(this);
-        params.x = savedX < 0 ? metrics.widthPixels - dp(WHALE_DP + 24) : savedX;
-        params.y = savedY < 0 ? Math.round(metrics.heightPixels * 0.35f) : savedY;
+        petParams.x = savedX < 0 ? metrics.widthPixels - whale - dp(EDGE_MARGIN_DP) : savedX;
+        petParams.y = savedY < 0 ? Math.round(metrics.heightPixels * 0.35f) : savedY;
+        clampPet();
 
-        overlay.setOnTouchListener(new DragTouchListener());
-        windowManager.addView(overlay, params);
+        petView.setOnTouchListener(new PetTouchListener());
+        try {
+            windowManager.addView(petView, petParams);
+        } catch (Exception e) {
+            petView = null;
+            stopSelf();
+            return;
+        }
+        renderBalance();
     }
 
-    private void applyLook() {
+    private void applyPetLook() {
         int whale = whalePx();
         if (whaleView != null) {
-            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) whaleView.getLayoutParams();
-            lp.width = whale;
-            lp.height = whale;
+            ViewGroup.LayoutParams lp = whaleView.getLayoutParams();
+            if (lp == null) {
+                lp = new ViewGroup.LayoutParams(whale, whale);
+            } else {
+                lp.width = whale;
+                lp.height = whale;
+            }
             whaleView.setLayoutParams(lp);
+        }
+        if (petView != null) {
+            petView.requestLayout();
+        }
+        if (petParams != null) {
+            safeUpdatePet();
+        }
+        positionBubble();
+    }
+
+    private void safeUpdatePet() {
+        if (petView == null || windowManager == null) {
+            return;
+        }
+        try {
+            windowManager.updateViewLayout(petView, petParams);
+        } catch (Exception ignored) {
+            // 窗口已消失
+        }
+    }
+
+    /** 保证鲸鱼窗口完整留在屏幕内。 */
+    private void clampPet() {
+        DisplayMetrics metrics = screenMetrics();
+        int whale = whalePx();
+        if (petParams.x < 0) {
+            petParams.x = 0;
+        }
+        if (petParams.x > metrics.widthPixels - whale) {
+            petParams.x = metrics.widthPixels - whale;
+        }
+        if (petParams.y < 0) {
+            petParams.y = 0;
+        }
+        if (petParams.y > metrics.heightPixels - whale) {
+            petParams.y = metrics.heightPixels - whale;
+        }
+    }
+
+    private void snapToEdge() {
+        DisplayMetrics metrics = screenMetrics();
+        int whale = whalePx();
+        int margin = dp(EDGE_MARGIN_DP);
+        if (Prefs.snapEdge(this)) {
+            int center = petParams.x + whale / 2;
+            petParams.x = center < metrics.widthPixels / 2
+                    ? margin
+                    : metrics.widthPixels - whale - margin;
+        }
+        clampPet();
+        safeUpdatePet();
+        positionBubble();
+        Prefs.setPos(this, petParams.x, petParams.y);
+    }
+
+    // ── 气泡窗口 ────────────────────────────────────────────────────────
+
+    private void ensureBubble() {
+        if (bubbleView != null || windowManager == null) {
+            return;
+        }
+        bubbleView = LayoutInflater.from(this).inflate(R.layout.overlay_bubble, null);
+        bubbleTextBox = bubbleView.findViewById(R.id.bubble_text);
+        tvLabel = bubbleView.findViewById(R.id.tv_label);
+        tvBalance = bubbleView.findViewById(R.id.tv_balance);
+        tvDetail = bubbleView.findViewById(R.id.tv_detail);
+
+        bubbleParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                overlayWindowType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        bubbleParams.gravity = Gravity.TOP | Gravity.START;
+
+        bubbleView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                refresh();
+                showBubbleAnimated();
+            }
+        });
+        applyBubbleLook();
+    }
+
+    private void applyBubbleLook() {
+        if (bubbleView == null) {
+            return;
         }
         int bubbleWidth = bubbleWidthPx();
         int bubbleHeight = bubbleHeightPx();
         float u = bubbleWidth / FRAME_W;
 
-        if (bubbleBox != null) {
-            LinearLayout.LayoutParams bparams = (LinearLayout.LayoutParams) bubbleBox.getLayoutParams();
-            bparams.width = bubbleWidth;
-            bparams.height = bubbleHeight;
-            bubbleBox.setLayoutParams(bparams);
-            if (!bubbleVisible) {
-                bubbleBox.setVisibility(View.GONE);
-            }
-            bubbleBox.setPivotX(bubbleWidth / 2f);
-            bubbleBox.setPivotY(bubbleHeight * 0.7f);
-        }
+        // WRAP_CONTENT 的悬浮窗按最小尺寸测量
+        bubbleView.setMinimumWidth(bubbleWidth);
+        bubbleView.setMinimumHeight(bubbleHeight);
+        bubbleView.setPivotX(bubbleWidth / 2f);
+        bubbleView.setPivotY(bubbleHeight * 0.7f);
+
         if (tvLabel != null) {
             tvLabel.setTextSize(TypedValue.COMPLEX_UNIT_PX, FONT_LABEL_U * u);
             tvLabel.setLetterSpacing(0.06f);
@@ -268,233 +356,167 @@ public class BalanceService extends Service {
         if (tvDetail != null) {
             tvDetail.setTextSize(TypedValue.COMPLEX_UNIT_PX, FONT_HINT_U * u);
             tvDetail.setLetterSpacing(0.02f);
-            LinearLayout.LayoutParams hparams = (LinearLayout.LayoutParams) tvDetail.getLayoutParams();
-            hparams.topMargin = Math.round(HINT_MARGIN_U * u);
-            tvDetail.setLayoutParams(hparams);
+            LinearLayout.LayoutParams hintParams =
+                    (LinearLayout.LayoutParams) tvDetail.getLayoutParams();
+            if (hintParams != null) {
+                hintParams.topMargin = Math.round(HINT_MARGIN_U * u);
+                tvDetail.setLayoutParams(hintParams);
+            }
             tvDetail.setMinHeight(Math.round(HINT_MIN_H_U * u));
+        }
+        positionBubble();
+    }
+
+    /** 把气泡摆到鲸鱼头顶（独立窗口，鲸鱼不会因此移动）。 */
+    private void positionBubble() {
+        if (bubbleParams == null || petParams == null) {
+            return;
+        }
+        DisplayMetrics metrics = screenMetrics();
+        int whale = whalePx();
+        int bubbleWidth = bubbleWidthPx();
+        int bubbleHeight = bubbleHeightPx();
+
+        int x = petParams.x + (whale - bubbleWidth) / 2;
+        int y = petParams.y - bubbleHeight + dp(BUBBLE_OVERLAP_DP);
+
+        if (x < 0) {
+            x = 0;
+        }
+        if (x > metrics.widthPixels - bubbleWidth) {
+            x = Math.max(0, metrics.widthPixels - bubbleWidth);
+        }
+        if (y < 0) {
+            y = 0;
+        }
+        bubbleParams.x = x;
+        bubbleParams.y = y;
+        if (bubbleAttached) {
+            safeUpdateBubble();
         }
     }
 
-    private void safeUpdate() {
-        if (overlay == null || windowManager == null) {
+    private void safeUpdateBubble() {
+        if (bubbleView == null || windowManager == null || !bubbleAttached) {
             return;
         }
         try {
-            windowManager.updateViewLayout(overlay, params);
+            windowManager.updateViewLayout(bubbleView, bubbleParams);
         } catch (Exception ignored) {
             // 窗口已消失
         }
     }
 
-    private void snapToEdge() {
-        DisplayMetrics metrics = screenMetrics();
-        int margin = dp(EDGE_MARGIN_DP);
-        int whale = whalePx();
-        int width = overlay.getWidth() > 0 ? overlay.getWidth() : whale;
-        int height = overlay.getHeight() > 0 ? overlay.getHeight() : whale;
-        // 鲸鱼在窗口里水平居中，所以鲸鱼中心 = 窗口左边 + 窗口宽/2
-        int whaleCenterX = params.x + width / 2;
-        int whaleTop = params.y + (height - whale);
-        int maxWhaleTop = metrics.heightPixels - whale;
-
-        // 关掉「松手贴边」：只保证鲸鱼完整留在屏幕内，停在哪里就是哪里
-        if (!Prefs.snapEdge(this)) {
-            if (whaleTop < 0) {
-                params.y += -whaleTop;
-            } else if (whaleTop > maxWhaleTop) {
-                params.y -= (whaleTop - maxWhaleTop);
-            }
-            if (whaleCenterX < whale / 2f) {
-                params.x += Math.round(whale / 2f - whaleCenterX);
-            } else if (whaleCenterX > metrics.widthPixels - whale / 2f) {
-                params.x -= Math.round(whaleCenterX - (metrics.widthPixels - whale / 2f));
-            }
-            safeUpdate();
+    private void showBubbleAnimated() {
+        if (!Prefs.showBubble(this)) {
             return;
         }
-
-        // 贴边：把「鲸鱼」本身贴到左右边缘（不是把整个窗口盒子贴过去）
-        int targetWhaleCenter = whaleCenterX < metrics.widthPixels / 2f
-                ? margin + whale / 2
-                : metrics.widthPixels - margin - whale / 2;
-        params.x = targetWhaleCenter - width / 2;
-
-        if (whaleTop < 0) {
-            params.y += -whaleTop;
-        } else if (whaleTop > maxWhaleTop) {
-            params.y -= (whaleTop - maxWhaleTop);
-        }
-        safeUpdate();
-        Prefs.setPos(this, params.x, params.y);
-    }
-
-    private void openSettings() {
-        Intent intent = new Intent(this, MainActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(intent);
-    }
-
-    // ── 按压 / 摸头 ─────────────────────────────────────────────────────
-
-    private void squish(boolean down) {
-        if (whaleView == null) {
+        ensureBubble();
+        if (bubbleView == null || windowManager == null) {
             return;
         }
-        float sx = down ? SQUISH_SCALE_X : 1f;
-        float sy = down ? SQUISH_SCALE_Y : 1f;
-        whaleView.animate().scaleX(sx).scaleY(sy).setDuration(SQUISH_MS).start();
-    }
-
-    private void ensurePatAnimation() {
-        if (patAnim != null) {
-            return;
-        }
-        patAnim = new AnimationDrawable();
-        patAnim.setOneShot(false);
-        for (int res : PAT_FRAMES) {
-            Drawable frame = getResources().getDrawable(res);
-            patAnim.addFrame(frame, PAT_FRAME_MS);
-        }
-    }
-
-    private void startPat() {
-        if (whaleView == null || patting) {
-            return;
-        }
-        patting = true;
-        ensurePatAnimation();
-        whaleView.setImageDrawable(patAnim);
-        patAnim.start();
-        // 摸头时「冒出来」：放大 + 上浮一点，一眼能看出她正在被摸
-        whaleView.animate()
-                .scaleX(PAT_SCALE).scaleY(PAT_SCALE)
-                .translationY(-dp(PAT_LIFT_DP))
-                .setDuration(PAT_POP_MS).start();
-
-        if (Prefs.patVibrate(this)) {
-            vibrate(18);
-        }
-        int count = Prefs.bumpPatCount(this);
-        showLine(PAT_LINES[count % PAT_LINES.length]);
-    }
-
-    private void stopPat() {
-        patting = false;
-        if (patAnim != null) {
-            patAnim.stop();
-        }
-        if (whaleView != null) {
-            whaleView.setImageResource(R.drawable.whale);
-            whaleView.animate()
-                    .scaleX(1f).scaleY(1f)
-                    .translationY(0f)
-                    .setDuration(140).start();
-        }
-    }
-
-    private void showLine(String line) {
-        if (tvBalance == null) {
-            return;
-        }
-        setLines(null, line, "摸摸头 · 第 " + Prefs.patCount(this) + " 次", true);
-        showBubbleAnimated();
-        if (restoreLineRunnable != null) {
-            handler.removeCallbacks(restoreLineRunnable);
-        }
-        restoreLineRunnable = new Runnable() {
-            @Override
-            public void run() {
-                renderBalance();
-                if (bubbleVisible) {
-                    scheduleHideBubble();
-                }
-            }
-        };
-        handler.postDelayed(restoreLineRunnable, LINE_MS);
-    }
-
-    private void vibrate(int ms) {
-        try {
-            Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-            if (vibrator == null || !vibrator.hasVibrator()) {
+        positionBubble();
+        if (!bubbleAttached) {
+            bubbleView.setAlpha(0f);
+            bubbleView.setScaleX(0.86f);
+            bubbleView.setScaleY(0.86f);
+            try {
+                windowManager.addView(bubbleView, bubbleParams);
+                bubbleAttached = true;
+            } catch (Exception e) {
+                bubbleAttached = false;
                 return;
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
-            } else {
-                vibrator.vibrate(ms);
-            }
-        } catch (Exception ignored) {
-            // 没有震动马达或权限
         }
+        bubbleVisible = true;
+        popBubble();
+        scheduleHideBubble();
     }
 
-    // ── 音效（原版按压音 Ya1 / 松开音 Ya2） ──────────────────────────────
-
-    private MediaPlayer createSound(int resId) {
-        try {
-            return MediaPlayer.create(this, resId);
-        } catch (Exception e) {
-            return null;
+    private void hideBubbleAnimated() {
+        if (!bubbleAttached || bubbleView == null) {
+            return;
         }
+        bubbleVisible = false;
+        bubbleView.animate()
+                .alpha(0f)
+                .scaleX(0.94f)
+                .scaleY(0.94f)
+                .setDuration(BUBBLE_HIDE_MS)
+                .withEndAction(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!bubbleVisible) {
+                            detachBubble();
+                        }
+                    }
+                })
+                .start();
     }
 
-    private void playSound(MediaPlayer player) {
-        if (player == null || !Prefs.patSound(this)) {
+    private void detachBubble() {
+        if (!bubbleAttached || bubbleView == null || windowManager == null) {
+            bubbleAttached = false;
             return;
         }
         try {
-            if (player.isPlaying()) {
-                player.seekTo(0);
-            } else {
-                player.seekTo(0);
-                player.start();
-            }
+            windowManager.removeView(bubbleView);
         } catch (Exception ignored) {
-            // 播放失败静默
+            // 已经不在
         }
+        bubbleAttached = false;
+        bubbleVisible = false;
+        bubbleView.setAlpha(1f);
+        bubbleView.setScaleX(1f);
+        bubbleView.setScaleY(1f);
     }
 
-    private void releaseSound(MediaPlayer player) {
-        if (player == null) {
+    private void scheduleHideBubble() {
+        if (Prefs.bubblePinned(this)) {
             return;
         }
-        try {
-            player.release();
-        } catch (Exception ignored) {
-            // 忽略
+        if (hideBubbleRunnable != null) {
+            handler.removeCallbacks(hideBubbleRunnable);
+        }
+        hideBubbleRunnable = new Runnable() {
+            @Override
+            public void run() {
+                hideBubbleRunnable = null;
+                hideBubbleAnimated();
+            }
+        };
+        handler.postDelayed(hideBubbleRunnable, BUBBLE_MS);
+    }
+
+    private void cancelHideBubble() {
+        if (hideBubbleRunnable != null) {
+            handler.removeCallbacks(hideBubbleRunnable);
+            hideBubbleRunnable = null;
         }
     }
 
-    // ── 余额刷新 ────────────────────────────────────────────────────────
-
-    private String defaultText() {
-        String last = Prefs.lastBalance(this);
-        if (last != null && !last.isEmpty()) {
-            return last;
+    private void popBubble() {
+        if (bubbleView == null) {
+            return;
         }
-        return "余额 --";
+        bubbleView.setAlpha(0f);
+        bubbleView.setScaleX(0.86f);
+        bubbleView.setScaleY(0.86f);
+        bubbleView.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(220L)
+                .setInterpolator(new OvershootInterpolator(1.6f))
+                .start();
+        if (bubbleTextBox != null) {
+            bubbleTextBox.setAlpha(0f);
+            bubbleTextBox.animate().alpha(1f).setStartDelay(120L).setDuration(160L).start();
+        }
     }
 
-    /** 鲸鱼边长（px）。 */
-    private int whalePx() {
-        return dp(Math.round(WHALE_DP * Prefs.scale(this)));
-    }
+    // ── 气泡内容 ────────────────────────────────────────────────────────
 
-    /** 泡泡宽（px）：鲸鱼宽 × BUBBLE_WIDTH_FACTOR。 */
-    private int bubbleWidthPx() {
-        return Math.round(whalePx() * BUBBLE_WIDTH_FACTOR);
-    }
-
-    /** 泡泡高（px）：比原版画布更扁，避免垂直空间浪费。 */
-    private int bubbleHeightPx() {
-        return Math.round(bubbleWidthPx() * BUBBLE_HEIGHT_FACTOR);
-    }
-
-    /**
-     * 按原版三行结构渲染：label（DeepSeek 余额）/ amount（金额）/ hint（今日已用）。
-     * lineMode = 摸头台词模式：隐藏 label，台词放在金额行并允许换行。
-     */
     private void setLines(String label, String amount, String hint, boolean lineMode) {
         if (tvBalance == null) {
             return;
@@ -522,121 +544,6 @@ public class BalanceService extends Service {
         }
     }
 
-    /** 显示气泡：带弹出动画，并按设置安排自动收起。 */
-    private void showBubbleAnimated() {
-        if (bubbleBox == null || !Prefs.showBubble(this)) {
-            return;
-        }
-        if (hideBubbleRunnable != null) {
-            handler.removeCallbacks(hideBubbleRunnable);
-            hideBubbleRunnable = null;
-        }
-        if (!bubbleVisible) {
-            shiftWindowForBubble(true);
-            bubbleBox.setVisibility(View.VISIBLE);
-            bubbleVisible = true;
-        }
-        popBubble();
-        scheduleHideBubble();
-    }
-
-    /** 气泡自动收起：不常显时，显示 BUBBLE_MS 后淡出。 */
-    private void scheduleHideBubble() {
-        if (Prefs.bubblePinned(this)) {
-            return;
-        }
-        if (hideBubbleRunnable != null) {
-            handler.removeCallbacks(hideBubbleRunnable);
-        }
-        hideBubbleRunnable = new Runnable() {
-            @Override
-            public void run() {
-                hideBubbleRunnable = null;
-                hideBubbleAnimated();
-            }
-        };
-        handler.postDelayed(hideBubbleRunnable, BUBBLE_MS);
-    }
-
-    private void hideBubbleAnimated() {
-        if (bubbleBox == null || !bubbleVisible) {
-            return;
-        }
-        bubbleVisible = false;
-        bubbleBox.animate()
-                .alpha(0f)
-                .scaleX(0.94f)
-                .scaleY(0.94f)
-                .setDuration(BUBBLE_HIDE_MS)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (bubbleBox == null || bubbleVisible) {
-                            return;
-                        }
-                        bubbleBox.setVisibility(View.GONE);
-                        shiftWindowForBubble(false);
-                    }
-                })
-                .start();
-    }
-
-    /**
-     * 气泡显隐会改变整个悬浮窗的高度，而窗口是按顶边定位的 ——
-     * 这里反向平移窗口，让鲸鱼在屏幕上原地不动。
-     */
-    private void shiftWindowForBubble(boolean showing) {
-        if (params == null) {
-            return;
-        }
-        // 高度：气泡在鲸鱼上方，显隐会改变窗口高，反向平移让鲸鱼原地不动
-        params.y += showing ? -bubbleHeightPx() : bubbleHeightPx();
-        // 宽度：窗口宽 = max(气泡宽, 鲸鱼宽)，气泡显隐会改窗口宽，鲸鱼居中所以要补一半
-        int delta = (bubbleWidthPx() - whalePx()) / 2;
-        params.x += showing ? -delta : delta;
-        safeUpdate();
-        Prefs.setPos(this, params.x, params.y);
-    }
-
-    /** 点鲸鱼：气泡显隐切换，走缓存不联网。 */
-    private void toggleBubble() {
-        if (bubbleVisible) {
-            hideBubbleAnimated();
-        } else {
-            renderBalance();
-            showBubbleAnimated();
-        }
-    }
-
-    /** 触点是否落在气泡上（用于「点气泡刷新」）。 */
-    private boolean isInsideBubble(float x, float y) {
-        if (bubbleBox == null || !bubbleVisible) {
-            return false;
-        }
-        Rect rect = new Rect();
-        bubbleBox.getHitRect(rect);
-        return rect.contains((int) x, (int) y);
-    }
-
-    /** 原版气泡弹出：形状先弹、文字随后淡入。 */
-    private void popBubble() {
-        if (bubbleBox == null) {
-            return;
-        }
-        bubbleBox.setAlpha(0f);
-        bubbleBox.setScaleX(0.86f);
-        bubbleBox.setScaleY(0.86f);
-        bubbleBox.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                .setDuration(220L)
-                .setInterpolator(new OvershootInterpolator(1.6f))
-                .start();
-        if (bubbleText != null) {
-            bubbleText.setAlpha(0f);
-            bubbleText.animate().alpha(1f).setStartDelay(120L).setDuration(160L).start();
-        }
-    }
-
-    /** 气泡常态：DeepSeek 余额 / 金额 / 今日已用。 */
     private void renderBalance() {
         String amount = Double.isNaN(shownTotal)
                 ? getString(R.string.bubble_loading)
@@ -645,12 +552,8 @@ public class BalanceService extends Service {
                 Ledger.usageHint(this, shownCurrency), false);
     }
 
-    /** 原版数字滚动：700ms，三次缓出。 */
     private void rollAmount(double from, double to, String currency) {
-        if (tvBalance == null) {
-            return;
-        }
-        if (Double.isNaN(to)) {
+        if (tvBalance == null || Double.isNaN(to)) {
             return;
         }
         if (Double.isNaN(from) || Math.abs(to - from) < 0.005) {
@@ -667,17 +570,285 @@ public class BalanceService extends Service {
         animator.start();
     }
 
+    private void showLine(String line) {
+        if (tvBalance == null) {
+            return;
+        }
+        setLines(null, line, "摸摸头 · 第 " + Prefs.patCount(this) + " 次", true);
+        showBubbleAnimated();
+        if (restoreLineRunnable != null) {
+            handler.removeCallbacks(restoreLineRunnable);
+        }
+        restoreLineRunnable = new Runnable() {
+            @Override
+            public void run() {
+                renderBalance();
+                if (bubbleVisible) {
+                    scheduleHideBubble();
+                }
+            }
+        };
+        handler.postDelayed(restoreLineRunnable, LINE_MS);
+    }
+
+    // ── 摸头 / 音效 ─────────────────────────────────────────────────────
+
+    private void squish(boolean down) {
+        if (whaleView == null) {
+            return;
+        }
+        whaleView.animate()
+                .scaleX(down ? SQUISH_SCALE_X : 1f)
+                .scaleY(down ? SQUISH_SCALE_Y : 1f)
+                .setDuration(SQUISH_MS)
+                .start();
+    }
+
+    private void ensurePatAnimation() {
+        if (patAnim != null) {
+            return;
+        }
+        patAnim = new AnimationDrawable();
+        patAnim.setOneShot(false);
+        for (int res : PAT_FRAMES) {
+            Drawable frame = getResources().getDrawable(res);
+            patAnim.addFrame(frame, PAT_FRAME_MS);
+        }
+    }
+
+    private void startPat() {
+        if (whaleView == null || patting) {
+            return;
+        }
+        patting = true;
+        ensurePatAnimation();
+        whaleView.setImageDrawable(patAnim);
+        patAnim.start();
+        whaleView.animate()
+                .scaleX(PAT_SCALE)
+                .scaleY(PAT_SCALE)
+                .translationY(-dp(PAT_LIFT_DP))
+                .setDuration(PAT_POP_MS)
+                .start();
+        if (Prefs.patVibrate(this)) {
+            vibrate(18);
+        }
+        int count = Prefs.bumpPatCount(this);
+        showLine(PAT_LINES[count % PAT_LINES.length]);
+    }
+
+    private void stopPat() {
+        patting = false;
+        if (patAnim != null) {
+            patAnim.stop();
+        }
+        if (whaleView != null) {
+            whaleView.setImageResource(R.drawable.whale);
+            whaleView.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .translationY(0f)
+                    .setDuration(140)
+                    .start();
+        }
+    }
+
+    private void vibrate(int ms) {
+        try {
+            Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+            if (vibrator == null || !vibrator.hasVibrator()) {
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(ms);
+            }
+        } catch (Exception ignored) {
+            // 没有震动马达或权限
+        }
+    }
+
+    private MediaPlayer createSound(int resId) {
+        try {
+            return MediaPlayer.create(this, resId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void playSound(MediaPlayer player) {
+        if (player == null || !Prefs.patSound(this)) {
+            return;
+        }
+        try {
+            player.seekTo(0);
+            player.start();
+        } catch (Exception ignored) {
+            // 播放失败静默
+        }
+    }
+
+    private void releaseSound(MediaPlayer player) {
+        if (player == null) {
+            return;
+        }
+        try {
+            player.release();
+        } catch (Exception ignored) {
+            // 忽略
+        }
+    }
+
+    // ── 小设置面板 ──────────────────────────────────────────────────────
+
+    private void showPanel() {
+        if (windowManager == null || !Settings.canDrawOverlays(this)) {
+            return;
+        }
+        if (panel != null) {
+            hidePanel();
+            return;
+        }
+        panel = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null);
+        bindPanel(panel);
+        panelParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                overlayWindowType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+        panelParams.gravity = Gravity.TOP | Gravity.START;
+        DisplayMetrics metrics = screenMetrics();
+        panelParams.x = dp(16);
+        panelParams.y = Math.round(metrics.heightPixels * 0.22f);
+        try {
+            windowManager.addView(panel, panelParams);
+        } catch (Exception e) {
+            panel = null;
+            return;
+        }
+        final View added = panel;
+        added.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override
+            public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                                       int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                if (panel == null || panel != added) {
+                    return;
+                }
+                int width = v.getWidth();
+                int height = v.getHeight();
+                if (width <= 0 || height <= 0) {
+                    return;
+                }
+                DisplayMetrics metrics = screenMetrics();
+                int targetX = Math.max(dp(8), (metrics.widthPixels - width) / 2);
+                int maxY = metrics.heightPixels - height - dp(8);
+                int targetY = Math.min(panelParams.y, Math.max(dp(8), maxY));
+                if (targetX != panelParams.x || targetY != panelParams.y) {
+                    panelParams.x = targetX;
+                    panelParams.y = targetY;
+                    updatePanelPosition();
+                }
+            }
+        });
+    }
+
+    private void updatePanelPosition() {
+        if (panel == null || windowManager == null) {
+            return;
+        }
+        try {
+            windowManager.updateViewLayout(panel, panelParams);
+        } catch (Exception ignored) {
+            // 面板已移除
+        }
+    }
+
+    private void hidePanel() {
+        if (panel == null) {
+            return;
+        }
+        if (windowManager != null) {
+            try {
+                windowManager.removeView(panel);
+            } catch (Exception ignored) {
+                // 已经不在
+            }
+        }
+        panel = null;
+    }
+
+    private void bindPanel(View root) {
+        Switch pinned = root.findViewById(R.id.pn_pinned);
+        Switch snap = root.findViewById(R.id.pn_snap);
+        Switch sound = root.findViewById(R.id.pn_sound);
+        Switch vibrate = root.findViewById(R.id.pn_vibrate);
+
+        pinned.setChecked(Prefs.bubblePinned(this));
+        snap.setChecked(Prefs.snapEdge(this));
+        sound.setChecked(Prefs.patSound(this));
+        vibrate.setChecked(Prefs.patVibrate(this));
+
+        pinned.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            Prefs.setBubblePinned(BalanceService.this, isChecked);
+            if (isChecked) {
+                showBubbleAnimated();
+            } else {
+                scheduleHideBubble();
+            }
+        });
+        snap.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            Prefs.setSnapEdge(BalanceService.this, isChecked);
+            if (isChecked) {
+                snapToEdge();
+            }
+        });
+        sound.setOnCheckedChangeListener((buttonView, isChecked) ->
+                Prefs.setPatSound(BalanceService.this, isChecked));
+        vibrate.setOnCheckedChangeListener((buttonView, isChecked) ->
+                Prefs.setPatVibrate(BalanceService.this, isChecked));
+
+        root.findViewById(R.id.pn_refresh).setOnClickListener(v -> {
+            refresh();
+            showBubbleAnimated();
+        });
+        root.findViewById(R.id.pn_full).setOnClickListener(v -> {
+            hidePanel();
+            openSettings();
+        });
+        root.findViewById(R.id.pn_close).setOnClickListener(v -> hidePanel());
+    }
+
+    private void openSettings() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+    }
+
+    // ── 余额刷新 ────────────────────────────────────────────────────────
+
+    private String defaultText() {
+        String last = Prefs.lastBalance(this);
+        if (last != null && !last.isEmpty()) {
+            return last;
+        }
+        return "--";
+    }
+
     private void refresh() {
         if (refreshing) {
             return;
         }
         String key = Prefs.apiKey(this);
         if (key.trim().isEmpty()) {
+            ensureBubble();
             setLines(getString(R.string.bubble_label), "--", "未填 API Key", false);
             return;
         }
         refreshing = true;
         if (Double.isNaN(shownTotal)) {
+            ensureBubble();
             setLines(getString(R.string.bubble_label),
                     getString(R.string.bubble_loading),
                     getString(R.string.bubble_loading_hint), false);
@@ -695,6 +866,7 @@ public class BalanceService extends Service {
                     }
                     shownTotal = total;
                     if (!patting) {
+                        ensureBubble();
                         renderBalance();
                         rollAmount(from, total, shownCurrency);
                         if (bubbleVisible) {
@@ -736,7 +908,7 @@ public class BalanceService extends Service {
         }
     }
 
-    // ── 通知（前台服务保活） ─────────────────────────────────────────────
+    // ── 通知 ────────────────────────────────────────────────────────────
 
     private void startAsForeground() {
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
@@ -783,11 +955,24 @@ public class BalanceService extends Service {
                 .build();
     }
 
+    // ── 尺寸与手势 ──────────────────────────────────────────────────────
+
+    private int whalePx() {
+        return dp(Math.round(WHALE_DP * Prefs.scale(this)));
+    }
+
+    private int bubbleWidthPx() {
+        return Math.round(whalePx() * BUBBLE_WIDTH_FACTOR);
+    }
+
+    private int bubbleHeightPx() {
+        return Math.round(bubbleWidthPx() * BUBBLE_HEIGHT_FACTOR);
+    }
+
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    /** 屏幕真实尺寸（含状态栏/导航栏区域；悬浮窗开了 LAYOUT_NO_LIMITS 可用满屏）。 */
     private DisplayMetrics screenMetrics() {
         DisplayMetrics metrics = new DisplayMetrics();
         if (windowManager != null) {
@@ -798,15 +983,20 @@ public class BalanceService extends Service {
         return metrics;
     }
 
-    /** 拖拽 / 点击 / 摸头 / 长按设置。 */
-    private class DragTouchListener implements View.OnTouchListener {
+    private int overlayWindowType() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                : WindowManager.LayoutParams.TYPE_PHONE;
+    }
+
+    /** 鲸鱼上的：拖拽 / 点击 / 摸头 / 长按设置。 */
+    private class PetTouchListener implements View.OnTouchListener {
 
         private float downRawX;
         private float downRawY;
         private int startX;
         private int startY;
         private boolean dragging;
-        private boolean hitBubble;
 
         @Override
         public boolean onTouch(View view, MotionEvent event) {
@@ -814,14 +1004,11 @@ public class BalanceService extends Service {
                 case MotionEvent.ACTION_DOWN:
                     downRawX = event.getRawX();
                     downRawY = event.getRawY();
-                    startX = params.x;
-                    startY = params.y;
+                    startX = petParams.x;
+                    startY = petParams.y;
                     dragging = false;
                     holdOpenedSettings = false;
-                    hitBubble = isInsideBubble(event.getX(), event.getY());
-                    if (!hitBubble) {
-                        squish(true);
-                    }
+                    squish(true);
                     playSound(pressSound);
                     handler.postDelayed(getPatRunnable(), PAT_TRIGGER_MS);
                     handler.postDelayed(getSettingsRunnable(), SETTINGS_TRIGGER_MS);
@@ -836,48 +1023,39 @@ public class BalanceService extends Service {
                         stopPat();
                     }
                     if (dragging) {
-                        params.x = startX + Math.round(dx);
-                        params.y = startY + Math.round(dy);
-                        safeUpdate();
+                        petParams.x = startX + Math.round(dx);
+                        petParams.y = startY + Math.round(dy);
+                        safeUpdatePet();
+                        positionBubble();
                     }
                     return true;
                 }
 
                 case MotionEvent.ACTION_UP:
                     cancelHoldTriggers();
-                    boolean tappedBubble = hitBubble;
-                    hitBubble = false;
-                    if (!tappedBubble) {
-                        squish(false);
-                    }
+                    squish(false);
                     playSound(releaseSound);
                     if (dragging) {
                         snapToEdge();
                     } else if (patting) {
-                        // 摸头松手：只结束摸头，不碰余额
                         stopPat();
                     } else if (holdOpenedSettings) {
-                        // 长按唤出面板，松手不再触发别的动作
                         holdOpenedSettings = false;
-                    } else if (tappedBubble) {
-                        // 只有点气泡才刷新余额
+                    } else {
+                        // v1.6.0 行为：点鲸鱼刷新余额并弹出气泡
                         refresh();
                         showBubbleAnimated();
-                    } else {
-                        // 点鲸鱼：只显隐气泡，不发请求
-                        toggleBubble();
                     }
-                    Prefs.setPos(BalanceService.this, params.x, params.y);
+                    Prefs.setPos(BalanceService.this, petParams.x, petParams.y);
                     dragging = false;
                     return true;
 
                 case MotionEvent.ACTION_CANCEL:
                     cancelHoldTriggers();
-                    holdOpenedSettings = false;
                     squish(false);
+                    holdOpenedSettings = false;
                     if (dragging) {
                         snapToEdge();
-                        Prefs.setPos(BalanceService.this, params.x, params.y);
                     }
                     stopPat();
                     dragging = false;
@@ -918,7 +1096,7 @@ public class BalanceService extends Service {
                     public void run() {
                         if (!dragging) {
                             holdOpenedSettings = true;
-                            openSettings();
+                            showPanel();
                         }
                     }
                 };
