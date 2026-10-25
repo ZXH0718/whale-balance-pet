@@ -12,6 +12,8 @@
     <string name="hint_key">sk-...</string>
     <string name="label_interval">自动刷新间隔（秒，最小 15）</string>
     <string name="label_bubble">显示余额气泡</string>
+    <string name="label_bubble_pinned">气泡常显（关掉则点按后 5 秒自动收起）</string>
+    <string name="label_snap_edge">松手贴边（关掉则停在原地）</string>
     <string name="label_pat_sound">摸头音效（按压 / 松开）</string>
     <string name="label_pat_vibrate">摸头震动</string>
     <string name="action_overlay">授予悬浮窗权限</string>

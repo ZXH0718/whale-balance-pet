@@ -94,4 +94,21 @@ public final class Prefs {
         get(context).edit().putInt("pat_count", current + 1).apply();
         return current;
     }
+    /** 气泡常显：true = 一直挂着；false = 点按后显示 5 秒自动收起。 */
+    public static boolean bubblePinned(Context context) {
+        return get(context).getBoolean("bubble_pinned", false);
+    }
+
+    public static void setBubblePinned(Context context, boolean pinned) {
+        get(context).edit().putBoolean("bubble_pinned", pinned).apply();
+    }
+
+    /** 松手是否吸附到左右边缘。 */
+    public static boolean snapEdge(Context context) {
+        return get(context).getBoolean("snap_edge", true);
+    }
+
+    public static void setSnapEdge(Context context, boolean snap) {
+        get(context).edit().putBoolean("snap_edge", snap).apply();
+    }
 }

@@ -8,6 +8,7 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.animation.ValueAnimator;
 import android.graphics.Typeface;
 import android.graphics.drawable.AnimationDrawable;
@@ -55,9 +56,12 @@ public class BalanceService extends Service {
     /** 鲸鱼尺寸（dp）；根方块 = 鲸鱼 / WHALE_RATIO，与圆版 .dshwv-img 59.45% 一致 */
     private static final int WHALE_DP = 96;
     private static final float WHALE_RATIO = 0.5945f;
-    /** 原版泡泡画布与字号比例：u = 泡泡宽 / 1026 */
+    /** 泡泡相对鲸鱼的宽度倍数（原版是 1/0.5945 ≈ 1.68，压窄到 1.6 更好收边） */
+    private static final float BUBBLE_WIDTH_FACTOR = 1.6f;
+    /** 泡泡高宽比：原版画布是 700/1026 = 0.682，压扁到 0.52 —— 字形不变，只收高度 */
+    private static final float BUBBLE_HEIGHT_FACTOR = 0.52f;
+    /** 原版泡泡画布与字号比例：u = 泡泡宽 / 1026（字号仍按这个来，保证字够大） */
     private static final float FRAME_W = 1026f;
-    private static final float FRAME_H = 700f;
     private static final float FONT_LABEL_U = 66f;
     private static final float FONT_AMOUNT_U = 128f;
     private static final float FONT_HINT_U = 56f;
@@ -81,6 +85,9 @@ public class BalanceService extends Service {
     private static final int PAT_LIFT_DP = 8;
     private static final int PAT_POP_MS = 160;
     private static final int LINE_MS = 2600;
+    /** 气泡停留时长（原版 BUBBLE_MS = 5000） */
+    private static final long BUBBLE_MS = 5000L;
+    private static final long BUBBLE_HIDE_MS = 160L;
 
     private static final int[] PAT_FRAMES = {
             R.drawable.pat_00, R.drawable.pat_01, R.drawable.pat_02, R.drawable.pat_03,
@@ -110,7 +117,8 @@ public class BalanceService extends Service {
     private TextView tvDetail;
     private double shownTotal = Double.NaN;
     private String shownCurrency = "CNY";
-    private boolean bubbleShown;
+    private boolean bubbleVisible;
+    private Runnable hideBubbleRunnable;
     private ImageView whaleView;
     private AnimationDrawable patAnim;
     private WindowManager.LayoutParams params;
@@ -197,6 +205,7 @@ public class BalanceService extends Service {
         }
         applyLook();
         renderBalance();
+        showBubbleAnimated();
 
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -229,8 +238,8 @@ public class BalanceService extends Service {
             lp.height = whale;
             whaleView.setLayoutParams(lp);
         }
-        int bubbleWidth = Math.round(whalePx() / WHALE_RATIO);
-        int bubbleHeight = Math.round(bubbleWidth * FRAME_H / FRAME_W);
+        int bubbleWidth = bubbleWidthPx();
+        int bubbleHeight = bubbleHeightPx();
         float u = bubbleWidth / FRAME_W;
 
         if (bubbleBox != null) {
@@ -238,7 +247,9 @@ public class BalanceService extends Service {
             bparams.width = bubbleWidth;
             bparams.height = bubbleHeight;
             bubbleBox.setLayoutParams(bparams);
-            bubbleBox.setVisibility(Prefs.showBubble(this) ? View.VISIBLE : View.GONE);
+            if (!bubbleVisible) {
+                bubbleBox.setVisibility(View.GONE);
+            }
             bubbleBox.setPivotX(bubbleWidth / 2f);
             bubbleBox.setPivotY(bubbleHeight * 0.7f);
         }
@@ -277,6 +288,24 @@ public class BalanceService extends Service {
         int margin = dp(EDGE_MARGIN_DP);
         int width = overlay.getWidth() > 0 ? overlay.getWidth() : dp(WHALE_DP + 40);
         int height = overlay.getHeight() > 0 ? overlay.getHeight() : dp(WHALE_DP + 40);
+
+        // 关掉「松手贴边」：只夹在屏幕内，停在哪里就是哪里
+        if (!Prefs.snapEdge(this)) {
+            if (params.x < margin) {
+                params.x = margin;
+            }
+            if (params.x > metrics.widthPixels - width - margin) {
+                params.x = metrics.widthPixels - width - margin;
+            }
+            if (params.y < 0) {
+                params.y = 0;
+            }
+            if (params.y > metrics.heightPixels - height - margin) {
+                params.y = metrics.heightPixels - height - margin;
+            }
+            safeUpdate();
+            return;
+        }
 
         int centerX = params.x + width / 2;
         params.x = centerX < metrics.widthPixels / 2
@@ -362,6 +391,7 @@ public class BalanceService extends Service {
             return;
         }
         setLines(null, line, "摸摸头 · 第 " + Prefs.patCount(this) + " 次", true);
+        showBubbleAnimated();
         if (restoreLineRunnable != null) {
             handler.removeCallbacks(restoreLineRunnable);
         }
@@ -369,6 +399,9 @@ public class BalanceService extends Service {
             @Override
             public void run() {
                 renderBalance();
+                if (bubbleVisible) {
+                    scheduleHideBubble();
+                }
             }
         };
         handler.postDelayed(restoreLineRunnable, LINE_MS);
@@ -437,9 +470,19 @@ public class BalanceService extends Service {
         return "余额 --";
     }
 
-    /** 鲸鱼边长（px），泡泡尺寸按原版比例推出来。 */
+    /** 鲸鱼边长（px）。 */
     private int whalePx() {
         return dp(Math.round(WHALE_DP * Prefs.scale(this)));
+    }
+
+    /** 泡泡宽（px）：鲸鱼宽 × BUBBLE_WIDTH_FACTOR。 */
+    private int bubbleWidthPx() {
+        return Math.round(whalePx() * BUBBLE_WIDTH_FACTOR);
+    }
+
+    /** 泡泡高（px）：比原版画布更扁，避免垂直空间浪费。 */
+    private int bubbleHeightPx() {
+        return Math.round(bubbleWidthPx() * BUBBLE_HEIGHT_FACTOR);
     }
 
     /**
@@ -450,7 +493,7 @@ public class BalanceService extends Service {
         if (tvBalance == null) {
             return;
         }
-        float u = Math.round(whalePx() / WHALE_RATIO) / FRAME_W;
+        float u = bubbleWidthPx() / FRAME_W;
         if (tvLabel != null) {
             if (label == null || label.isEmpty()) {
                 tvLabel.setVisibility(View.GONE);
@@ -471,19 +514,88 @@ public class BalanceService extends Service {
                 tvDetail.setVisibility(View.VISIBLE);
             }
         }
-        setBubbleVisible(Prefs.showBubble(this));
     }
 
-    private void setBubbleVisible(boolean visible) {
-        if (bubbleBox == null) {
+    /** 显示气泡：带弹出动画，并按设置安排自动收起。 */
+    private void showBubbleAnimated() {
+        if (bubbleBox == null || !Prefs.showBubble(this)) {
             return;
         }
-        boolean wasVisible = bubbleShown;
-        bubbleBox.setVisibility(visible ? View.VISIBLE : View.GONE);
-        bubbleShown = visible;
-        if (visible && !wasVisible) {
-            popBubble();
+        if (hideBubbleRunnable != null) {
+            handler.removeCallbacks(hideBubbleRunnable);
+            hideBubbleRunnable = null;
         }
+        if (!bubbleVisible) {
+            shiftWindowForBubble(true);
+            bubbleBox.setVisibility(View.VISIBLE);
+            bubbleVisible = true;
+        }
+        popBubble();
+        scheduleHideBubble();
+    }
+
+    /** 气泡自动收起：不常显时，显示 BUBBLE_MS 后淡出。 */
+    private void scheduleHideBubble() {
+        if (Prefs.bubblePinned(this)) {
+            return;
+        }
+        if (hideBubbleRunnable != null) {
+            handler.removeCallbacks(hideBubbleRunnable);
+        }
+        hideBubbleRunnable = new Runnable() {
+            @Override
+            public void run() {
+                hideBubbleRunnable = null;
+                hideBubbleAnimated();
+            }
+        };
+        handler.postDelayed(hideBubbleRunnable, BUBBLE_MS);
+    }
+
+    private void hideBubbleAnimated() {
+        if (bubbleBox == null || !bubbleVisible) {
+            return;
+        }
+        bubbleVisible = false;
+        bubbleBox.animate()
+                .alpha(0f)
+                .scaleX(0.94f)
+                .scaleY(0.94f)
+                .setDuration(BUBBLE_HIDE_MS)
+                .withEndAction(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (bubbleBox == null || bubbleVisible) {
+                            return;
+                        }
+                        bubbleBox.setVisibility(View.GONE);
+                        shiftWindowForBubble(false);
+                    }
+                })
+                .start();
+    }
+
+    /**
+     * 气泡显隐会改变整个悬浮窗的高度，而窗口是按顶边定位的 ——
+     * 这里反向平移窗口，让鲸鱼在屏幕上原地不动。
+     */
+    private void shiftWindowForBubble(boolean showing) {
+        if (params == null) {
+            return;
+        }
+        params.y += showing ? -bubbleHeightPx() : bubbleHeightPx();
+        safeUpdate();
+        Prefs.setPos(this, params.x, params.y);
+    }
+
+    /** 触点是否落在气泡上（用于「点气泡刷新」）。 */
+    private boolean isInsideBubble(float x, float y) {
+        if (bubbleBox == null || !bubbleVisible) {
+            return false;
+        }
+        Rect rect = new Rect();
+        bubbleBox.getHitRect(rect);
+        return rect.contains((int) x, (int) y);
     }
 
     /** 原版气泡弹出：形状先弹、文字随后淡入。 */
@@ -565,8 +677,11 @@ public class BalanceService extends Service {
                     if (!patting) {
                         renderBalance();
                         rollAmount(from, total, shownCurrency);
+                        if (bubbleVisible) {
+                            scheduleHideBubble();
+                        }
                     }
-                } else if (!patting) {
+                } else if (!patting && bubbleVisible) {
                     String hint = text == null ? getString(R.string.bubble_error_hint) : text;
                     if (hint.length() > 14) {
                         hint = hint.substring(0, 14);
@@ -574,6 +689,7 @@ public class BalanceService extends Service {
                     setLines(getString(R.string.bubble_label),
                             Double.isNaN(shownTotal) ? "--" : Ledger.amountText(shownTotal, shownCurrency),
                             hint, false);
+                    scheduleHideBubble();
                 }
                 updateNotification(text);
             }
@@ -659,6 +775,7 @@ public class BalanceService extends Service {
         private int startX;
         private int startY;
         private boolean dragging;
+        private boolean hitBubble;
 
         @Override
         public boolean onTouch(View view, MotionEvent event) {
@@ -669,7 +786,10 @@ public class BalanceService extends Service {
                     startX = params.x;
                     startY = params.y;
                     dragging = false;
-                    squish(true);
+                    hitBubble = isInsideBubble(event.getX(), event.getY());
+                    if (!hitBubble) {
+                        squish(true);
+                    }
                     playSound(pressSound);
                     handler.postDelayed(getPatRunnable(), PAT_TRIGGER_MS);
                     handler.postDelayed(getSettingsRunnable(), SETTINGS_TRIGGER_MS);
@@ -693,14 +813,20 @@ public class BalanceService extends Service {
 
                 case MotionEvent.ACTION_UP:
                     cancelHoldTriggers();
-                    squish(false);
+                    if (!hitBubble) {
+                        squish(false);
+                    } else {
+                        hitBubble = false;
+                    }
                     playSound(releaseSound);
                     if (dragging) {
                         snapToEdge();
                     } else if (patting) {
                         stopPat();
                     } else {
+                        // 点鲸鱼或点气泡都是刷新，并让气泡带弹出动画出现
                         refresh();
+                        showBubbleAnimated();
                     }
                     Prefs.setPos(BalanceService.this, params.x, params.y);
                     dragging = false;

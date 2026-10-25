@@ -22,6 +22,8 @@ public class MainActivity extends Activity {
     private EditText intervalInput;
     private Switch bubbleSwitch;
     private Switch soundSwitch;
+    private Switch pinnedSwitch;
+    private Switch snapSwitch;
     private Switch vibrateSwitch;
     private TextView ledgerSummary;
     private TextView ledgerDetail;
@@ -36,6 +38,8 @@ public class MainActivity extends Activity {
         intervalInput = findViewById(R.id.et_interval);
         bubbleSwitch = findViewById(R.id.sw_bubble);
         soundSwitch = findViewById(R.id.sw_sound);
+        pinnedSwitch = findViewById(R.id.sw_pinned);
+        snapSwitch = findViewById(R.id.sw_snap);
         vibrateSwitch = findViewById(R.id.sw_vibrate);
         ledgerSummary = findViewById(R.id.tv_ledger_summary);
         ledgerDetail = findViewById(R.id.tv_ledger_detail);
@@ -44,6 +48,8 @@ public class MainActivity extends Activity {
         intervalInput.setText(String.valueOf(Prefs.intervalSec(this)));
         bubbleSwitch.setChecked(Prefs.showBubble(this));
         soundSwitch.setChecked(Prefs.patSound(this));
+        pinnedSwitch.setChecked(Prefs.bubblePinned(this));
+        snapSwitch.setChecked(Prefs.snapEdge(this));
         vibrateSwitch.setChecked(Prefs.patVibrate(this));
 
         Button overlayButton = findViewById(R.id.btn_overlay);
@@ -122,6 +128,8 @@ public class MainActivity extends Activity {
         Prefs.setApiKey(this, keyInput.getText().toString());
         Prefs.setShowBubble(this, bubbleSwitch.isChecked());
         Prefs.setPatSound(this, soundSwitch.isChecked());
+        Prefs.setBubblePinned(this, pinnedSwitch.isChecked());
+        Prefs.setSnapEdge(this, snapSwitch.isChecked());
         Prefs.setPatVibrate(this, vibrateSwitch.isChecked());
         int interval = 60;
         try {
