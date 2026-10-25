@@ -20,7 +20,13 @@ import java.nio.charset.StandardCharsets;
 public final class BalanceFetcher {
 
     public interface Callback {
-        void onResult(boolean ok, String text);
+        /**
+         * @param ok       是否成功
+         * @param text     给气泡显示的文本（如 ¥12.34）
+         * @param total    数值总余额，失败为 NaN
+         * @param currency 币种（CNY / USD ...）
+         */
+        void onResult(boolean ok, String text, double total, String currency);
     }
 
     private static final String ENDPOINT = "https://api.deepseek.com/user/balance";
@@ -31,7 +37,7 @@ public final class BalanceFetcher {
 
     public static void fetch(final String apiKey, final Callback callback) {
         if (apiKey == null || apiKey.trim().isEmpty()) {
-            callback.onResult(false, "未填 API Key");
+            callback.onResult(false, "未填 Key", Double.NaN, "");
             return;
         }
         new Thread(new Runnable() {
@@ -39,8 +45,13 @@ public final class BalanceFetcher {
             public void run() {
                 boolean ok;
                 String text;
+                double total = Double.NaN;
+                String currency = "";
                 try {
-                    text = request(apiKey.trim());
+                    Result result = request(apiKey.trim());
+                    text = result.text;
+                    total = result.total;
+                    currency = result.currency;
                     ok = true;
                 } catch (Exception e) {
                     ok = false;
@@ -48,17 +59,25 @@ public final class BalanceFetcher {
                 }
                 final boolean fok = ok;
                 final String ftext = text;
+                final double ftotal = total;
+                final String fcur = currency;
                 MAIN.post(new Runnable() {
                     @Override
                     public void run() {
-                        callback.onResult(fok, ftext);
+                        callback.onResult(fok, ftext, ftotal, fcur);
                     }
                 });
             }
         }, "balance-fetch").start();
     }
 
-    private static String request(String key) throws Exception {
+    private static class Result {
+        String text;
+        double total;
+        String currency;
+    }
+
+    private static Result request(String key) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(ENDPOINT).openConnection();
         try {
             conn.setRequestMethod("GET");
@@ -92,13 +111,20 @@ public final class BalanceFetcher {
         }
     }
 
-    private static String format(String json) throws Exception {
+    private static Result format(String json) throws Exception {
+        Result result = new Result();
         JSONObject root = new JSONObject(json);
         JSONArray infos = root.optJSONArray("balance_infos");
         if (infos == null || infos.length() == 0) {
-            return root.optBoolean("is_available", false) ? "余额 --" : "账户不可用";
+            result.text = root.optBoolean("is_available", false) ? "余额 --" : "账户不可用";
+            result.total = Double.NaN;
+            result.currency = "";
+            return result;
         }
         StringBuilder out = new StringBuilder();
+        double sum = 0;
+        boolean hasNumber = false;
+        String primaryCurrency = "";
         for (int i = 0; i < infos.length(); i++) {
             JSONObject info = infos.getJSONObject(i);
             String currency = info.optString("currency", "");
@@ -106,19 +132,21 @@ public final class BalanceFetcher {
             if (out.length() > 0) {
                 out.append(" / ");
             }
-            out.append(symbol(currency)).append(total);
+            out.append(Ledger.symbol(currency)).append(total);
+            try {
+                sum += Double.parseDouble(total);
+                hasNumber = true;
+            } catch (NumberFormatException ignored) {
+                // 非数字就不参与记账
+            }
+            if (primaryCurrency.isEmpty()) {
+                primaryCurrency = currency;
+            }
         }
-        return out.toString();
-    }
-
-    private static String symbol(String currency) {
-        if ("CNY".equalsIgnoreCase(currency)) {
-            return "\u00a5";
-        }
-        if ("USD".equalsIgnoreCase(currency)) {
-            return "$";
-        }
-        return currency.isEmpty() ? "" : currency + " ";
+        result.text = out.toString();
+        result.total = hasNumber ? sum : Double.NaN;
+        result.currency = primaryCurrency;
+        return result;
     }
 
     private static String shortMessage(Exception e) {

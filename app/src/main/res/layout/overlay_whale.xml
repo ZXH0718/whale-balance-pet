@@ -7,19 +7,38 @@
     android:orientation="vertical"
     android:padding="4dp">
 
-    <TextView
-        android:id="@+id/tv_bubble"
+    <LinearLayout
+        android:id="@+id/bubble_box"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:background="@drawable/bubble_bg"
-        android:maxLines="1"
-        android:paddingLeft="12dp"
-        android:paddingTop="5dp"
-        android:paddingRight="12dp"
-        android:paddingBottom="5dp"
-        android:text="@string/bubble_placeholder"
-        android:textColor="#FFA2B4DD"
-        android:textSize="13sp" />
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingLeft="14dp"
+        android:paddingTop="8dp"
+        android:paddingRight="14dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/tv_balance"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:maxLines="1"
+            android:text="@string/bubble_placeholder"
+            android:textColor="#FFE8EFFF"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_detail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:maxLines="1"
+            android:text="@string/bubble_detail_placeholder"
+            android:textColor="#FF9FB0CF"
+            android:textSize="11sp" />
+    </LinearLayout>
 
     <ImageView
         android:id="@+id/iv_whale"

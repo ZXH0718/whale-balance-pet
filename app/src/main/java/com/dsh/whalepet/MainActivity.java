@@ -23,6 +23,8 @@ public class MainActivity extends Activity {
     private Switch bubbleSwitch;
     private Switch soundSwitch;
     private Switch vibrateSwitch;
+    private TextView ledgerSummary;
+    private TextView ledgerDetail;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,6 +37,8 @@ public class MainActivity extends Activity {
         bubbleSwitch = findViewById(R.id.sw_bubble);
         soundSwitch = findViewById(R.id.sw_sound);
         vibrateSwitch = findViewById(R.id.sw_vibrate);
+        ledgerSummary = findViewById(R.id.tv_ledger_summary);
+        ledgerDetail = findViewById(R.id.tv_ledger_detail);
 
         keyInput.setText(Prefs.apiKey(this));
         intervalInput.setText(String.valueOf(Prefs.intervalSec(this)));
@@ -57,6 +61,13 @@ public class MainActivity extends Activity {
         Button checkButton = findViewById(R.id.btn_check);
         checkButton.setOnClickListener(v -> checkOnce());
 
+        Button clearButton = findViewById(R.id.btn_clear_ledger);
+        clearButton.setOnClickListener(v -> {
+            Ledger.clear(this);
+            refreshLedger();
+            Toast.makeText(this, "记账已清空", Toast.LENGTH_SHORT).show();
+        });
+
         // Android 13+ 通知权限：不授予也能跑，只是前台服务通知不可见
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -68,6 +79,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateStatus();
+        refreshLedger();
     }
 
     private void updateStatus() {
@@ -77,6 +89,15 @@ public class MainActivity extends Activity {
                 + "\n上次余额：" + (last == null || last.isEmpty() ? "—" : last)
                 + "\n累计摸头：" + Prefs.patCount(this) + " 次";
         status.setText(text);
+    }
+
+    private void refreshLedger() {
+        if (ledgerSummary == null || ledgerDetail == null) {
+            return;
+        }
+        String currency = Ledger.lastCurrency(this);
+        ledgerSummary.setText(Ledger.summaryText(this, currency));
+        ledgerDetail.setText(Ledger.detailText(this, 12));
     }
 
     private boolean canOverlay() {
@@ -142,9 +163,13 @@ public class MainActivity extends Activity {
     private void checkOnce() {
         save();
         status.setText("查询中…");
-        BalanceFetcher.fetch(Prefs.apiKey(this), (ok, text) -> {
+        BalanceFetcher.fetch(Prefs.apiKey(this), (ok, text, total, currency) -> {
             Prefs.setLastBalance(this, text);
+            if (ok) {
+                Ledger.observe(this, total, currency);
+            }
             status.setText((ok ? "当前余额：" : "查询结果：") + text);
+            refreshLedger();
         });
     }
 }
