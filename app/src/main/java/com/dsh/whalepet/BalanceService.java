@@ -598,6 +598,16 @@ public class BalanceService extends Service {
         Prefs.setPos(this, params.x, params.y);
     }
 
+    /** 点鲸鱼：气泡显隐切换，走缓存不联网。 */
+    private void toggleBubble() {
+        if (bubbleVisible) {
+            hideBubbleAnimated();
+        } else {
+            renderBalance();
+            showBubbleAnimated();
+        }
+    }
+
     /** 触点是否落在气泡上（用于「点气泡刷新」）。 */
     private boolean isInsideBubble(float x, float y) {
         if (bubbleBox == null || !bubbleVisible) {
