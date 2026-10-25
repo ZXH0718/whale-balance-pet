@@ -24,4 +24,12 @@
     <string name="label_ledger">记账</string>
     <string name="hint_ledger_empty">还没有账目。余额发生变化时会自动记一笔。</string>
     <string name="section_tips">记账靠余额差额推算：两次刷新之间余额下降记为消费、上升记为充值，所以账目颗粒度取决于刷新间隔。泡泡形状、三行文案与配色均按 dsh-whale-widget 的 frame_classic 还原，摸头动画取自它的 rua.gif，按压音取自 Ya1/Ya2。若手机厂商限制后台，请在系统设置里把本应用的后台活动 / 自启动设为允许，否则锁屏久了悬浮窗可能被系统回收。</string>
+    <string name="panel_pinned">气泡常显</string>
+    <string name="panel_snap">松手贴边</string>
+    <string name="panel_sound">摸头音效</string>
+    <string name="panel_vibrate">摸头震动</string>
+    <string name="panel_title">鲸鱼娘 · 快设</string>
+    <string name="panel_full">完整设置</string>
+    <string name="panel_close">关闭</string>
+    <string name="panel_hint">长按鲸鱼 3 秒可再次唤出 / 收起这个面板</string>
 </resources>

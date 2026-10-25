@@ -31,6 +31,7 @@ import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import android.view.animation.OvershootInterpolator;
 import android.widget.ImageView;
+import android.widget.Switch;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -119,6 +120,10 @@ public class BalanceService extends Service {
     private String shownCurrency = "CNY";
     private boolean bubbleVisible;
     private Runnable hideBubbleRunnable;
+
+    private View panel;
+    private WindowManager.LayoutParams panelParams;
+    private boolean holdOpenedPanel;
     private ImageView whaleView;
     private AnimationDrawable patAnim;
     private WindowManager.LayoutParams params;
@@ -171,6 +176,7 @@ public class BalanceService extends Service {
 
     @Override
     public void onDestroy() {
+        hidePanel();
         stopTicker();
         handler.removeCallbacksAndMessages(null);
         releaseSound(pressSound);
@@ -284,42 +290,45 @@ public class BalanceService extends Service {
     }
 
     private void snapToEdge() {
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        DisplayMetrics metrics = screenMetrics();
         int margin = dp(EDGE_MARGIN_DP);
-        int width = overlay.getWidth() > 0 ? overlay.getWidth() : dp(WHALE_DP + 40);
-        int height = overlay.getHeight() > 0 ? overlay.getHeight() : dp(WHALE_DP + 40);
+        int whale = whalePx();
+        int width = overlay.getWidth() > 0 ? overlay.getWidth() : whale;
+        int height = overlay.getHeight() > 0 ? overlay.getHeight() : whale;
+        // 鲸鱼在窗口里水平居中，所以鲸鱼中心 = 窗口左边 + 窗口宽/2
+        int whaleCenterX = params.x + width / 2;
+        int whaleTop = params.y + (height - whale);
+        int maxWhaleTop = metrics.heightPixels - whale;
 
-        // 关掉「松手贴边」：只夹在屏幕内，停在哪里就是哪里
+        // 关掉「松手贴边」：只保证鲸鱼完整留在屏幕内，停在哪里就是哪里
         if (!Prefs.snapEdge(this)) {
-            if (params.x < margin) {
-                params.x = margin;
+            if (whaleTop < 0) {
+                params.y += -whaleTop;
+            } else if (whaleTop > maxWhaleTop) {
+                params.y -= (whaleTop - maxWhaleTop);
             }
-            if (params.x > metrics.widthPixels - width - margin) {
-                params.x = metrics.widthPixels - width - margin;
-            }
-            if (params.y < 0) {
-                params.y = 0;
-            }
-            if (params.y > metrics.heightPixels - height - margin) {
-                params.y = metrics.heightPixels - height - margin;
+            if (whaleCenterX < whale / 2f) {
+                params.x += Math.round(whale / 2f - whaleCenterX);
+            } else if (whaleCenterX > metrics.widthPixels - whale / 2f) {
+                params.x -= Math.round(whaleCenterX - (metrics.widthPixels - whale / 2f));
             }
             safeUpdate();
             return;
         }
 
-        int centerX = params.x + width / 2;
-        params.x = centerX < metrics.widthPixels / 2
-                ? margin
-                : metrics.widthPixels - width - margin;
+        // 贴边：把「鲸鱼」本身贴到左右边缘（不是把整个窗口盒子贴过去）
+        int targetWhaleCenter = whaleCenterX < metrics.widthPixels / 2f
+                ? margin + whale / 2
+                : metrics.widthPixels - margin - whale / 2;
+        params.x = targetWhaleCenter - width / 2;
 
-        if (params.y < 0) {
-            params.y = 0;
-        }
-        int maxY = metrics.heightPixels - height - margin;
-        if (params.y > maxY) {
-            params.y = maxY;
+        if (whaleTop < 0) {
+            params.y += -whaleTop;
+        } else if (whaleTop > maxWhaleTop) {
+            params.y -= (whaleTop - maxWhaleTop);
         }
         safeUpdate();
+        Prefs.setPos(this, params.x, params.y);
     }
 
     private void openSettings() {
@@ -583,9 +592,126 @@ public class BalanceService extends Service {
         if (params == null) {
             return;
         }
+        // 高度：气泡在鲸鱼上方，显隐会改变窗口高，反向平移让鲸鱼原地不动
         params.y += showing ? -bubbleHeightPx() : bubbleHeightPx();
+        // 宽度：窗口宽 = max(气泡宽, 鲸鱼宽)，气泡显隐会改窗口宽，鲸鱼居中所以要补一半
+        int delta = (bubbleWidthPx() - whalePx()) / 2;
+        params.x += showing ? -delta : delta;
         safeUpdate();
         Prefs.setPos(this, params.x, params.y);
+    }
+
+    private int overlayWindowType() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                : WindowManager.LayoutParams.TYPE_PHONE;
+    }
+
+    /** 长按弹出的小设置面板（悬浮窗，不离开当前应用）。 */
+    private void showPanel() {
+        if (windowManager == null || !Settings.canDrawOverlays(this)) {
+            return;
+        }
+        if (panel != null) {
+            hidePanel();
+            return;
+        }
+        panel = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null);
+        bindPanel(panel);
+        panelParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                overlayWindowType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+        panelParams.gravity = Gravity.TOP | Gravity.START;
+        DisplayMetrics metrics = screenMetrics();
+        panelParams.x = dp(16);
+        panelParams.y = Math.round(metrics.heightPixels * 0.22f);
+        try {
+            windowManager.addView(panel, panelParams);
+        } catch (Exception e) {
+            panel = null;
+            return;
+        }
+        final View added = panel;
+        added.post(new Runnable() {
+            @Override
+            public void run() {
+                if (panel == null || panel != added) {
+                    return;
+                }
+                DisplayMetrics metrics = screenMetrics();
+                int width = panel.getWidth();
+                panelParams.x = Math.max(dp(8), (metrics.widthPixels - width) / 2);
+                updatePanelPosition();
+            }
+        });
+    }
+
+    private void updatePanelPosition() {
+        if (panel == null || windowManager == null) {
+            return;
+        }
+        try {
+            windowManager.updateViewLayout(panel, panelParams);
+        } catch (Exception ignored) {
+            // 面板已移除
+        }
+    }
+
+    private void hidePanel() {
+        if (panel == null || windowManager == null) {
+            panel = null;
+            return;
+        }
+        try {
+            windowManager.removeView(panel);
+        } catch (Exception ignored) {
+            // 已经不在
+        }
+        panel = null;
+    }
+
+    private void bindPanel(View root) {
+        Switch pinned = root.findViewById(R.id.pn_pinned);
+        Switch snap = root.findViewById(R.id.pn_snap);
+        Switch sound = root.findViewById(R.id.pn_sound);
+        Switch vibrate = root.findViewById(R.id.pn_vibrate);
+
+        pinned.setChecked(Prefs.bubblePinned(this));
+        snap.setChecked(Prefs.snapEdge(this));
+        sound.setChecked(Prefs.patSound(this));
+        vibrate.setChecked(Prefs.patVibrate(this));
+
+        pinned.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            Prefs.setBubblePinned(BalanceService.this, isChecked);
+            if (isChecked) {
+                showBubbleAnimated();
+            } else {
+                scheduleHideBubble();
+            }
+        });
+        snap.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            Prefs.setSnapEdge(BalanceService.this, isChecked);
+            if (isChecked) {
+                snapToEdge();
+            }
+        });
+        sound.setOnCheckedChangeListener((buttonView, isChecked) ->
+                Prefs.setPatSound(BalanceService.this, isChecked));
+        vibrate.setOnCheckedChangeListener((buttonView, isChecked) ->
+                Prefs.setPatVibrate(BalanceService.this, isChecked));
+
+        root.findViewById(R.id.pn_refresh).setOnClickListener(v -> {
+            refresh();
+            showBubbleAnimated();
+        });
+        root.findViewById(R.id.pn_full).setOnClickListener(v -> {
+            hidePanel();
+            openSettings();
+        });
+        root.findViewById(R.id.pn_close).setOnClickListener(v -> hidePanel());
     }
 
     /** 触点是否落在气泡上（用于「点气泡刷新」）。 */
@@ -767,6 +893,17 @@ public class BalanceService extends Service {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    /** 屏幕真实尺寸（含状态栏/导航栏区域；悬浮窗开了 LAYOUT_NO_LIMITS 可用满屏）。 */
+    private DisplayMetrics screenMetrics() {
+        DisplayMetrics metrics = new DisplayMetrics();
+        if (windowManager != null) {
+            windowManager.getDefaultDisplay().getRealMetrics(metrics);
+        } else {
+            metrics.setTo(getResources().getDisplayMetrics());
+        }
+        return metrics;
+    }
+
     /** 拖拽 / 点击 / 摸头 / 长按设置。 */
     private class DragTouchListener implements View.OnTouchListener {
 
@@ -786,6 +923,7 @@ public class BalanceService extends Service {
                     startX = params.x;
                     startY = params.y;
                     dragging = false;
+                    holdOpenedPanel = false;
                     hitBubble = isInsideBubble(event.getX(), event.getY());
                     if (!hitBubble) {
                         squish(true);
@@ -823,6 +961,9 @@ public class BalanceService extends Service {
                         snapToEdge();
                     } else if (patting) {
                         stopPat();
+                    } else if (holdOpenedPanel) {
+                        // 这次是长按唤出面板，松手不再触发刷新
+                        holdOpenedPanel = false;
                     } else {
                         // 点鲸鱼或点气泡都是刷新，并让气泡带弹出动画出现
                         refresh();
@@ -834,6 +975,7 @@ public class BalanceService extends Service {
 
                 case MotionEvent.ACTION_CANCEL:
                     cancelHoldTriggers();
+                    holdOpenedPanel = false;
                     squish(false);
                     if (dragging) {
                         snapToEdge();
@@ -877,7 +1019,8 @@ public class BalanceService extends Service {
                     @Override
                     public void run() {
                         if (!dragging) {
-                            openSettings();
+                            holdOpenedPanel = true;
+                            showPanel();
                         }
                     }
                 };
