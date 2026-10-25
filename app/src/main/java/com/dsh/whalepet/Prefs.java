@@ -68,4 +68,30 @@ public final class Prefs {
     public static void setLastBalance(Context context, String text) {
         get(context).edit().putString("last_balance", text).apply();
     }
+    public static boolean patSound(Context context) {
+        return get(context).getBoolean("pat_sound", true);
+    }
+
+    public static void setPatSound(Context context, boolean on) {
+        get(context).edit().putBoolean("pat_sound", on).apply();
+    }
+
+    public static boolean patVibrate(Context context) {
+        return get(context).getBoolean("pat_vibrate", true);
+    }
+
+    public static void setPatVibrate(Context context, boolean on) {
+        get(context).edit().putBoolean("pat_vibrate", on).apply();
+    }
+
+    public static int patCount(Context context) {
+        return get(context).getInt("pat_count", 0);
+    }
+
+    /** 摸头计数 +1，返回本次应该用的台词序号（从 0 开始）。 */
+    public static int bumpPatCount(Context context) {
+        int current = patCount(context);
+        get(context).edit().putInt("pat_count", current + 1).apply();
+        return current;
+    }
 }

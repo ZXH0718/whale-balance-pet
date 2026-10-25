@@ -8,10 +8,15 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.AnimationDrawable;
+import android.graphics.drawable.Drawable;
+import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
@@ -20,12 +25,19 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowManager;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
- * 前台服务：负责在屏幕角落放一只鲸鱼娘 + 余额气泡。
- * 拖拽可移动，松手自动吸附左右边缘，位置记在本机；点一下立即刷新，长按打开设置。
+ * 前台服务：屏幕角落的鲸鱼娘 + 余额气泡。
+ *
+ * 交互（还原 dsh-whale-widget 的按压手感）：
+ *  - 按下：鲸鱼压扁 scaleY(0.88) / scaleX(1.05)，播放按压音 Ya1
+ *  - 按住满 1 秒：进入摸头 —— 用原版 rua.gif 解出的 10 帧动画循环播放 + 台词 + 震动
+ *  - 松手：回弹到 1:1，播放松开音 Ya2；未拖动则刷新余额
+ *  - 按住满 3 秒：打开设置页
+ *  - 拖动：跟手移动，松手吸附左右边缘并记住位置
  */
 public class BalanceService extends Service {
 
@@ -38,14 +50,56 @@ public class BalanceService extends Service {
     private static final int EDGE_MARGIN_DP = 6;
     private static final int WHALE_DP = 72;
 
+    /** 按住多久进入摸头 */
+    private static final int PAT_TRIGGER_MS = 1000;
+    /** 按住多久打开设置 */
+    private static final int SETTINGS_TRIGGER_MS = 3000;
+    /** 每帧时长：原版 rua.gif 每帧 2cs = 20ms */
+    private static final int PAT_FRAME_MS = 20;
+    /** 原版按压形变：SQUISH = 'scaleY(0.88) scaleX(1.05)' */
+    private static final float SQUISH_SCALE_Y = 0.88f;
+    private static final float SQUISH_SCALE_X = 1.05f;
+    private static final int SQUISH_MS = 90;
+    private static final int LINE_MS = 2600;
+
+    private static final int[] PAT_FRAMES = {
+            R.drawable.pat_00, R.drawable.pat_01, R.drawable.pat_02, R.drawable.pat_03,
+            R.drawable.pat_04, R.drawable.pat_05, R.drawable.pat_06, R.drawable.pat_07,
+            R.drawable.pat_08, R.drawable.pat_09
+    };
+
+    private static final String[] PAT_LINES = {
+            "唔…别摸头啦",
+            "呀…！",
+            "再摸就要掉毛了",
+            "…好舒服的样子",
+            "嗨呀，痒",
+            "摸头可以，余额不能掉",
+            "今天的我也很可爱吧",
+            "喂喂，集中精神写代码",
+            "被你摸秃了要你负责",
+            "…再摸一下也不是不行"
+    };
+
     private WindowManager windowManager;
     private View overlay;
     private TextView bubble;
+    private ImageView whaleView;
+    private AnimationDrawable patAnim;
     private WindowManager.LayoutParams params;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Runnable ticker;
+    private Runnable patRunnable;
+    private Runnable settingsRunnable;
+    private Runnable restoreLineRunnable;
+
+    private MediaPlayer pressSound;
+    private MediaPlayer releaseSound;
+
     private int touchSlop;
     private boolean refreshing;
+    private boolean patting;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -56,6 +110,8 @@ public class BalanceService extends Service {
     public void onCreate() {
         super.onCreate();
         touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        pressSound = createSound(R.raw.ya1);
+        releaseSound = createSound(R.raw.ya2);
     }
 
     @Override
@@ -81,6 +137,9 @@ public class BalanceService extends Service {
     @Override
     public void onDestroy() {
         stopTicker();
+        handler.removeCallbacksAndMessages(null);
+        releaseSound(pressSound);
+        releaseSound(releaseSound);
         if (overlay != null && windowManager != null) {
             try {
                 windowManager.removeView(overlay);
@@ -98,6 +157,11 @@ public class BalanceService extends Service {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         overlay = LayoutInflater.from(this).inflate(R.layout.overlay_whale, null);
         bubble = overlay.findViewById(R.id.tv_bubble);
+        whaleView = overlay.findViewById(R.id.iv_whale);
+        if (whaleView != null) {
+            // 以顶部为轴压扁，摸头/按压时像是被从上面按住
+            whaleView.setPivotY(0f);
+        }
         bubble.setText(defaultText());
         applyLook();
 
@@ -126,12 +190,11 @@ public class BalanceService extends Service {
 
     private void applyLook() {
         float scale = Prefs.scale(this);
-        View whale = overlay.findViewById(R.id.iv_whale);
-        if (whale != null) {
-            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) whale.getLayoutParams();
+        if (whaleView != null) {
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) whaleView.getLayoutParams();
             lp.width = dp(Math.round(WHALE_DP * scale));
             lp.height = dp(Math.round(WHALE_DP * scale));
-            whale.setLayoutParams(lp);
+            whaleView.setLayoutParams(lp);
         }
         if (bubble != null) {
             bubble.setVisibility(Prefs.showBubble(this) ? View.VISIBLE : View.GONE);
@@ -177,6 +240,126 @@ public class BalanceService extends Service {
         startActivity(intent);
     }
 
+    // ── 按压 / 摸头 ─────────────────────────────────────────────────────
+
+    private void squish(boolean down) {
+        if (whaleView == null) {
+            return;
+        }
+        float sx = down ? SQUISH_SCALE_X : 1f;
+        float sy = down ? SQUISH_SCALE_Y : 1f;
+        whaleView.animate().scaleX(sx).scaleY(sy).setDuration(SQUISH_MS).start();
+    }
+
+    private void ensurePatAnimation() {
+        if (patAnim != null) {
+            return;
+        }
+        patAnim = new AnimationDrawable();
+        patAnim.setOneShot(false);
+        for (int res : PAT_FRAMES) {
+            Drawable frame = getResources().getDrawable(res);
+            patAnim.addFrame(frame, PAT_FRAME_MS);
+        }
+    }
+
+    private void startPat() {
+        if (whaleView == null || patting) {
+            return;
+        }
+        patting = true;
+        ensurePatAnimation();
+        whaleView.setImageDrawable(patAnim);
+        patAnim.start();
+
+        if (Prefs.patVibrate(this)) {
+            vibrate(18);
+        }
+        int count = Prefs.bumpPatCount(this);
+        showLine(PAT_LINES[count % PAT_LINES.length]);
+    }
+
+    private void stopPat() {
+        patting = false;
+        if (patAnim != null) {
+            patAnim.stop();
+        }
+        if (whaleView != null) {
+            whaleView.setImageResource(R.drawable.whale);
+        }
+    }
+
+    private void showLine(String line) {
+        if (bubble == null) {
+            return;
+        }
+        bubble.setText(line);
+        bubble.setVisibility(View.VISIBLE);
+        if (restoreLineRunnable != null) {
+            handler.removeCallbacks(restoreLineRunnable);
+        }
+        restoreLineRunnable = new Runnable() {
+            @Override
+            public void run() {
+                setBubbleText(defaultText());
+            }
+        };
+        handler.postDelayed(restoreLineRunnable, LINE_MS);
+    }
+
+    private void vibrate(int ms) {
+        try {
+            Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+            if (vibrator == null || !vibrator.hasVibrator()) {
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(ms);
+            }
+        } catch (Exception ignored) {
+            // 没有震动马达或权限
+        }
+    }
+
+    // ── 音效（原版按压音 Ya1 / 松开音 Ya2） ──────────────────────────────
+
+    private MediaPlayer createSound(int resId) {
+        try {
+            return MediaPlayer.create(this, resId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void playSound(MediaPlayer player) {
+        if (player == null || !Prefs.patSound(this)) {
+            return;
+        }
+        try {
+            if (player.isPlaying()) {
+                player.seekTo(0);
+            } else {
+                player.seekTo(0);
+                player.start();
+            }
+        } catch (Exception ignored) {
+            // 播放失败静默
+        }
+    }
+
+    private void releaseSound(MediaPlayer player) {
+        if (player == null) {
+            return;
+        }
+        try {
+            player.release();
+        } catch (Exception ignored) {
+            // 忽略
+        }
+    }
+
     // ── 余额刷新 ────────────────────────────────────────────────────────
 
     private String defaultText() {
@@ -212,7 +395,9 @@ public class BalanceService extends Service {
             @Override
             public void onResult(boolean ok, String text) {
                 refreshing = false;
-                setBubbleText(text);
+                if (!patting) {
+                    setBubbleText(text);
+                }
                 if (ok) {
                     Prefs.setLastBalance(BalanceService.this, text);
                 }
@@ -292,7 +477,7 @@ public class BalanceService extends Service {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    /** 拖拽 / 点击 / 长按。 */
+    /** 拖拽 / 点击 / 摸头 / 长按设置。 */
     private class DragTouchListener implements View.OnTouchListener {
 
         private float downRawX;
@@ -300,15 +485,6 @@ public class BalanceService extends Service {
         private int startX;
         private int startY;
         private boolean dragging;
-
-        private final Runnable longPress = new Runnable() {
-            @Override
-            public void run() {
-                if (!dragging) {
-                    openSettings();
-                }
-            }
-        };
 
         @Override
         public boolean onTouch(View view, MotionEvent event) {
@@ -319,7 +495,10 @@ public class BalanceService extends Service {
                     startX = params.x;
                     startY = params.y;
                     dragging = false;
-                    handler.postDelayed(longPress, 600L);
+                    squish(true);
+                    playSound(pressSound);
+                    handler.postDelayed(getPatRunnable(), PAT_TRIGGER_MS);
+                    handler.postDelayed(getSettingsRunnable(), SETTINGS_TRIGGER_MS);
                     return true;
 
                 case MotionEvent.ACTION_MOVE: {
@@ -327,7 +506,8 @@ public class BalanceService extends Service {
                     float dy = event.getRawY() - downRawY;
                     if (!dragging && Math.hypot(dx, dy) > touchSlop) {
                         dragging = true;
-                        handler.removeCallbacks(longPress);
+                        cancelHoldTriggers();
+                        stopPat();
                     }
                     if (dragging) {
                         params.x = startX + Math.round(dx);
@@ -338,9 +518,13 @@ public class BalanceService extends Service {
                 }
 
                 case MotionEvent.ACTION_UP:
-                    handler.removeCallbacks(longPress);
+                    cancelHoldTriggers();
+                    squish(false);
+                    playSound(releaseSound);
                     if (dragging) {
                         snapToEdge();
+                    } else if (patting) {
+                        stopPat();
                     } else {
                         refresh();
                     }
@@ -349,17 +533,56 @@ public class BalanceService extends Service {
                     return true;
 
                 case MotionEvent.ACTION_CANCEL:
-                    handler.removeCallbacks(longPress);
+                    cancelHoldTriggers();
+                    squish(false);
                     if (dragging) {
                         snapToEdge();
                         Prefs.setPos(BalanceService.this, params.x, params.y);
                     }
+                    stopPat();
                     dragging = false;
                     return true;
 
                 default:
                     return false;
             }
+        }
+
+        private void cancelHoldTriggers() {
+            if (patRunnable != null) {
+                handler.removeCallbacks(patRunnable);
+            }
+            if (settingsRunnable != null) {
+                handler.removeCallbacks(settingsRunnable);
+            }
+        }
+
+        private Runnable getPatRunnable() {
+            if (patRunnable == null) {
+                patRunnable = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!dragging) {
+                            startPat();
+                        }
+                    }
+                };
+            }
+            return patRunnable;
+        }
+
+        private Runnable getSettingsRunnable() {
+            if (settingsRunnable == null) {
+                settingsRunnable = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!dragging) {
+                            openSettings();
+                        }
+                    }
+                };
+            }
+            return settingsRunnable;
         }
     }
 }

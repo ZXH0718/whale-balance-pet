@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">鲸鱼娘余额桌宠</string>
     <string name="bubble_placeholder">余额 --</string>
-    <string name="section_intro">把鲸鱼娘放在屏幕角落，常显 DeepSeek 账户余额。拖拽移动、松手自动吸附左右边缘，点一下立即刷新，长按鲸鱼打开设置。</string>
+    <string name="section_intro">把鲸鱼娘放在屏幕角落，常显 DeepSeek 账户余额。拖拽移动、松手自动吸附左右边缘，点一下立即刷新；按住 1 秒摸头，按住 3 秒打开设置。</string>
     <string name="label_key">DeepSeek API Key</string>
     <string name="hint_key">sk-...</string>
     <string name="label_interval">自动刷新间隔（秒，最小 15）</string>
@@ -11,5 +11,5 @@
     <string name="action_start">保存并启动桌宠</string>
     <string name="action_stop">停止桌宠</string>
     <string name="action_check">立即查询余额</string>
-    <string name="section_tips">Key 只保存在本机应用私有目录，仅用于请求 api.deepseek.com/user/balance；应用不上传任何数据。若手机厂商限制后台，请在系统设置里把本应用的后台活动 / 自启动设为允许，否则锁屏久了悬浮窗可能被系统回收。</string>
+    <string name="section_tips">Key 只保存在本机应用私有目录，仅用于请求 api.deepseek.com/user/balance；应用不上传任何数据。摸头动画与音效取自 dsh-whale-widget 的 rua.gif 与原版按压音。若手机厂商限制后台，请在系统设置里把本应用的后台活动 / 自启动设为允许，否则锁屏久了悬浮窗可能被系统回收。</string>
 </resources>

@@ -21,6 +21,8 @@ public class MainActivity extends Activity {
     private EditText keyInput;
     private EditText intervalInput;
     private Switch bubbleSwitch;
+    private Switch soundSwitch;
+    private Switch vibrateSwitch;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -31,10 +33,14 @@ public class MainActivity extends Activity {
         keyInput = findViewById(R.id.et_key);
         intervalInput = findViewById(R.id.et_interval);
         bubbleSwitch = findViewById(R.id.sw_bubble);
+        soundSwitch = findViewById(R.id.sw_sound);
+        vibrateSwitch = findViewById(R.id.sw_vibrate);
 
         keyInput.setText(Prefs.apiKey(this));
         intervalInput.setText(String.valueOf(Prefs.intervalSec(this)));
         bubbleSwitch.setChecked(Prefs.showBubble(this));
+        soundSwitch.setChecked(Prefs.patSound(this));
+        vibrateSwitch.setChecked(Prefs.patVibrate(this));
 
         Button overlayButton = findViewById(R.id.btn_overlay);
         overlayButton.setOnClickListener(v -> requestOverlayPermission());
@@ -68,7 +74,8 @@ public class MainActivity extends Activity {
         boolean overlay = canOverlay();
         String last = Prefs.lastBalance(this);
         String text = (overlay ? "悬浮窗权限：已授予" : "悬浮窗权限：未授予（必须先授权才能显示桌宠）")
-                + "\n上次余额：" + (last == null || last.isEmpty() ? "—" : last);
+                + "\n上次余额：" + (last == null || last.isEmpty() ? "—" : last)
+                + "\n累计摸头：" + Prefs.patCount(this) + " 次";
         status.setText(text);
     }
 
@@ -93,6 +100,8 @@ public class MainActivity extends Activity {
     private void save() {
         Prefs.setApiKey(this, keyInput.getText().toString());
         Prefs.setShowBubble(this, bubbleSwitch.isChecked());
+        Prefs.setPatSound(this, soundSwitch.isChecked());
+        Prefs.setPatVibrate(this, vibrateSwitch.isChecked());
         int interval = 60;
         try {
             interval = Integer.parseInt(intervalInput.getText().toString().trim());
