@@ -8,6 +8,8 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.PixelFormat;
+import android.animation.ValueAnimator;
+import android.graphics.Typeface;
 import android.graphics.drawable.AnimationDrawable;
 import android.graphics.drawable.Drawable;
 import android.media.MediaPlayer;
@@ -19,12 +21,14 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowManager;
+import android.view.animation.OvershootInterpolator;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -48,7 +52,19 @@ public class BalanceService extends Service {
     private static final String CHANNEL_ID = "whale_pet";
     private static final int NOTIFICATION_ID = 1001;
     private static final int EDGE_MARGIN_DP = 6;
-    private static final int WHALE_DP = 72;
+    /** 鲸鱼尺寸（dp）；根方块 = 鲸鱼 / WHALE_RATIO，与圆版 .dshwv-img 59.45% 一致 */
+    private static final int WHALE_DP = 96;
+    private static final float WHALE_RATIO = 0.5945f;
+    /** 原版泡泡画布与字号比例：u = 泡泡宽 / 1026 */
+    private static final float FRAME_W = 1026f;
+    private static final float FRAME_H = 700f;
+    private static final float FONT_LABEL_U = 66f;
+    private static final float FONT_AMOUNT_U = 128f;
+    private static final float FONT_HINT_U = 56f;
+    private static final float FONT_LINE_U = 76f;
+    private static final float HINT_MARGIN_U = 9f;
+    private static final float HINT_MIN_H_U = 64f;
+    private static final long ROLL_MS = 700L;
 
     /** 按住多久进入摸头 */
     private static final int PAT_TRIGGER_MS = 1000;
@@ -87,9 +103,14 @@ public class BalanceService extends Service {
 
     private WindowManager windowManager;
     private View overlay;
-    private View bubbleBox;
+    private BubbleBox bubbleBox;
+    private View bubbleText;
+    private TextView tvLabel;
     private TextView tvBalance;
     private TextView tvDetail;
+    private double shownTotal = Double.NaN;
+    private String shownCurrency = "CNY";
+    private boolean bubbleShown;
     private ImageView whaleView;
     private AnimationDrawable patAnim;
     private WindowManager.LayoutParams params;
@@ -163,15 +184,19 @@ public class BalanceService extends Service {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         overlay = LayoutInflater.from(this).inflate(R.layout.overlay_whale, null);
         bubbleBox = overlay.findViewById(R.id.bubble_box);
+        bubbleText = overlay.findViewById(R.id.bubble_text);
+        tvLabel = overlay.findViewById(R.id.tv_label);
         tvBalance = overlay.findViewById(R.id.tv_balance);
         tvDetail = overlay.findViewById(R.id.tv_detail);
+        shownTotal = Ledger.lastTotal(this);
+        shownCurrency = Ledger.lastCurrency(this);
         whaleView = overlay.findViewById(R.id.iv_whale);
         if (whaleView != null) {
             // 以顶部为轴压扁，摸头/按压时像是被从上面按住
             whaleView.setPivotY(0f);
         }
-        renderBalance();
         applyLook();
+        renderBalance();
 
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -197,21 +222,42 @@ public class BalanceService extends Service {
     }
 
     private void applyLook() {
-        float scale = Prefs.scale(this);
+        int whale = whalePx();
         if (whaleView != null) {
             LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) whaleView.getLayoutParams();
-            lp.width = dp(Math.round(WHALE_DP * scale));
-            lp.height = dp(Math.round(WHALE_DP * scale));
+            lp.width = whale;
+            lp.height = whale;
             whaleView.setLayoutParams(lp);
         }
+        int bubbleWidth = Math.round(whalePx() / WHALE_RATIO);
+        int bubbleHeight = Math.round(bubbleWidth * FRAME_H / FRAME_W);
+        float u = bubbleWidth / FRAME_W;
+
         if (bubbleBox != null) {
+            LinearLayout.LayoutParams bparams = (LinearLayout.LayoutParams) bubbleBox.getLayoutParams();
+            bparams.width = bubbleWidth;
+            bparams.height = bubbleHeight;
+            bubbleBox.setLayoutParams(bparams);
             bubbleBox.setVisibility(Prefs.showBubble(this) ? View.VISIBLE : View.GONE);
+            bubbleBox.setPivotX(bubbleWidth / 2f);
+            bubbleBox.setPivotY(bubbleHeight * 0.7f);
+        }
+        if (tvLabel != null) {
+            tvLabel.setTextSize(TypedValue.COMPLEX_UNIT_PX, FONT_LABEL_U * u);
+            tvLabel.setLetterSpacing(0.06f);
+            tvLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         }
         if (tvBalance != null) {
-            tvBalance.setTextSize(17f * scale);
+            tvBalance.setTextSize(TypedValue.COMPLEX_UNIT_PX, FONT_AMOUNT_U * u);
+            tvBalance.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         }
         if (tvDetail != null) {
-            tvDetail.setTextSize(11f * scale);
+            tvDetail.setTextSize(TypedValue.COMPLEX_UNIT_PX, FONT_HINT_U * u);
+            tvDetail.setLetterSpacing(0.02f);
+            LinearLayout.LayoutParams hparams = (LinearLayout.LayoutParams) tvDetail.getLayoutParams();
+            hparams.topMargin = Math.round(HINT_MARGIN_U * u);
+            tvDetail.setLayoutParams(hparams);
+            tvDetail.setMinHeight(Math.round(HINT_MIN_H_U * u));
         }
     }
 
@@ -315,7 +361,7 @@ public class BalanceService extends Service {
         if (tvBalance == null) {
             return;
         }
-        setBubble(line, null);
+        setLines(null, line, "摸摸头 · 第 " + Prefs.patCount(this) + " 次", true);
         if (restoreLineRunnable != null) {
             handler.removeCallbacks(restoreLineRunnable);
         }
@@ -391,27 +437,102 @@ public class BalanceService extends Service {
         return "余额 --";
     }
 
-    private void setBubble(String main, String detail) {
+    /** 鲸鱼边长（px），泡泡尺寸按原版比例推出来。 */
+    private int whalePx() {
+        return dp(Math.round(WHALE_DP * Prefs.scale(this)));
+    }
+
+    /**
+     * 按原版三行结构渲染：label（DeepSeek 余额）/ amount（金额）/ hint（今日已用）。
+     * lineMode = 摸头台词模式：隐藏 label，台词放在金额行并允许换行。
+     */
+    private void setLines(String label, String amount, String hint, boolean lineMode) {
         if (tvBalance == null) {
             return;
         }
-        tvBalance.setText(main);
+        float u = Math.round(whalePx() / WHALE_RATIO) / FRAME_W;
+        if (tvLabel != null) {
+            if (label == null || label.isEmpty()) {
+                tvLabel.setVisibility(View.GONE);
+            } else {
+                tvLabel.setText(label);
+                tvLabel.setVisibility(View.VISIBLE);
+            }
+        }
+        tvBalance.setTextSize(TypedValue.COMPLEX_UNIT_PX,
+                (lineMode ? FONT_LINE_U : FONT_AMOUNT_U) * u);
+        tvBalance.setMaxLines(lineMode ? 2 : 1);
+        tvBalance.setText(amount == null ? "" : amount);
         if (tvDetail != null) {
-            if (detail == null || detail.isEmpty()) {
+            if (hint == null || hint.isEmpty()) {
                 tvDetail.setVisibility(View.GONE);
             } else {
-                tvDetail.setText(detail);
+                tvDetail.setText(hint);
                 tvDetail.setVisibility(View.VISIBLE);
             }
         }
-        if (bubbleBox != null) {
-            bubbleBox.setVisibility(Prefs.showBubble(this) ? View.VISIBLE : View.GONE);
+        setBubbleVisible(Prefs.showBubble(this));
+    }
+
+    private void setBubbleVisible(boolean visible) {
+        if (bubbleBox == null) {
+            return;
+        }
+        boolean wasVisible = bubbleShown;
+        bubbleBox.setVisibility(visible ? View.VISIBLE : View.GONE);
+        bubbleShown = visible;
+        if (visible && !wasVisible) {
+            popBubble();
         }
     }
 
-    /** 气泡回到「余额 + 今日已用」的常态显示。 */
+    /** 原版气泡弹出：形状先弹、文字随后淡入。 */
+    private void popBubble() {
+        if (bubbleBox == null) {
+            return;
+        }
+        bubbleBox.setAlpha(0f);
+        bubbleBox.setScaleX(0.86f);
+        bubbleBox.setScaleY(0.86f);
+        bubbleBox.animate().alpha(1f).scaleX(1f).scaleY(1f)
+                .setDuration(220L)
+                .setInterpolator(new OvershootInterpolator(1.6f))
+                .start();
+        if (bubbleText != null) {
+            bubbleText.setAlpha(0f);
+            bubbleText.animate().alpha(1f).setStartDelay(120L).setDuration(160L).start();
+        }
+    }
+
+    /** 气泡常态：DeepSeek 余额 / 金额 / 今日已用。 */
     private void renderBalance() {
-        setBubble(defaultText(), Ledger.todayText(this, Ledger.lastCurrency(this)));
+        String amount = Double.isNaN(shownTotal)
+                ? getString(R.string.bubble_loading)
+                : Ledger.amountText(shownTotal, shownCurrency);
+        setLines(getString(R.string.bubble_label), amount,
+                Ledger.usageHint(this, shownCurrency), false);
+    }
+
+    /** 原版数字滚动：700ms，三次缓出。 */
+    private void rollAmount(double from, double to, String currency) {
+        if (tvBalance == null) {
+            return;
+        }
+        if (Double.isNaN(to)) {
+            return;
+        }
+        if (Double.isNaN(from) || Math.abs(to - from) < 0.005) {
+            tvBalance.setText(Ledger.amountText(to, currency));
+            return;
+        }
+        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+        animator.setDuration(ROLL_MS);
+        animator.addUpdateListener(animation -> {
+            float t = (float) animation.getAnimatedValue();
+            float eased = 1f - (float) Math.pow(1f - t, 3f);
+            tvBalance.setText(Ledger.amountText(from + (to - from) * eased, currency));
+        });
+        animator.start();
     }
 
     private void refresh() {
@@ -420,12 +541,14 @@ public class BalanceService extends Service {
         }
         String key = Prefs.apiKey(this);
         if (key.trim().isEmpty()) {
-            setBubble("未填 Key", null);
+            setLines(getString(R.string.bubble_label), "--", "未填 API Key", false);
             return;
         }
         refreshing = true;
-        if (tvBalance != null && tvBalance.getText().toString().startsWith("余额")) {
-            setBubble("查询中…", null);
+        if (Double.isNaN(shownTotal)) {
+            setLines(getString(R.string.bubble_label),
+                    getString(R.string.bubble_loading),
+                    getString(R.string.bubble_loading_hint), false);
         }
         BalanceFetcher.fetch(key, new BalanceFetcher.Callback() {
             @Override
@@ -434,13 +557,23 @@ public class BalanceService extends Service {
                 if (ok) {
                     Prefs.setLastBalance(BalanceService.this, text);
                     Ledger.observe(BalanceService.this, total, currency);
-                }
-                if (!patting) {
-                    if (ok) {
-                        renderBalance();
-                    } else {
-                        setBubble(text, null);
+                    double from = shownTotal;
+                    if (currency != null && !currency.isEmpty()) {
+                        shownCurrency = currency;
                     }
+                    shownTotal = total;
+                    if (!patting) {
+                        renderBalance();
+                        rollAmount(from, total, shownCurrency);
+                    }
+                } else if (!patting) {
+                    String hint = text == null ? getString(R.string.bubble_error_hint) : text;
+                    if (hint.length() > 14) {
+                        hint = hint.substring(0, 14);
+                    }
+                    setLines(getString(R.string.bubble_label),
+                            Double.isNaN(shownTotal) ? "--" : Ledger.amountText(shownTotal, shownCurrency),
+                            hint, false);
                 }
                 updateNotification(text);
             }

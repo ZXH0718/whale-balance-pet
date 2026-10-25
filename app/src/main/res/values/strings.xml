@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">鲸鱼娘余额桌宠</string>
-    <string name="bubble_placeholder">余额 --</string>
-    <string name="bubble_detail_placeholder">今日 还没花钱</string>
+    <string name="bubble_label">DeepSeek 余额</string>
+    <string name="bubble_placeholder">¥ --</string>
+    <string name="bubble_detail_placeholder">今日已用 ¥ --</string>
+    <string name="bubble_loading">…</string>
+    <string name="bubble_loading_hint">加载中…</string>
+    <string name="bubble_error_hint">获取失败 · 点击重试</string>
     <string name="section_intro">把鲸鱼娘放在屏幕角落，常显 DeepSeek 余额和今日已用。拖拽移动、松手自动吸附左右边缘，点一下立即刷新；按住 1 秒摸头，按住 3 秒打开设置。</string>
     <string name="label_key">DeepSeek API Key</string>
     <string name="hint_key">sk-...</string>
@@ -17,5 +21,5 @@
     <string name="action_clear_ledger">清空记账</string>
     <string name="label_ledger">记账</string>
     <string name="hint_ledger_empty">还没有账目。余额发生变化时会自动记一笔。</string>
-    <string name="section_tips">记账靠余额差额推算：两次刷新之间余额下降记为消费、上升记为充值，所以账目颗粒度取决于刷新间隔。摸头动画与音效取自 dsh-whale-widget 的 rua.gif 与原版按压音。若手机厂商限制后台，请在系统设置里把本应用的后台活动 / 自启动设为允许，否则锁屏久了悬浮窗可能被系统回收。</string>
+    <string name="section_tips">记账靠余额差额推算：两次刷新之间余额下降记为消费、上升记为充值，所以账目颗粒度取决于刷新间隔。泡泡形状、三行文案与配色均按 dsh-whale-widget 的 frame_classic 还原，摸头动画取自它的 rua.gif，按压音取自 Ya1/Ya2。若手机厂商限制后台，请在系统设置里把本应用的后台活动 / 自启动设为允许，否则锁屏久了悬浮窗可能被系统回收。</string>
 </resources>

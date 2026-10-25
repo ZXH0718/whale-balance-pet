@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 原版 dsh-whale-widget 的 frame_classic：viewBox 0 0 1026 700
+     主气泡路径与两条尾巴椭圆均逐字符取自原 SVG，
+     fill #FFFFFF / stroke #203170 / stroke-width 18 / round join+cap -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="1026dp"
+    android:height="700dp"
+    android:viewportWidth="1026"
+    android:viewportHeight="700">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 827 248 A 373 232 0 1 0 81 246 A 373 232 0 0 0 301 465 A 57 32 10 0 0 413 484 A 373 232 0 0 0 827 248 Z"
+        android:strokeColor="#203170"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="18" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 314.5 561 A 37.5 26 0 1 0 389.5 561 A 37.5 26 0 1 0 314.5 561 Z"
+        android:strokeColor="#203170"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="18" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 417.5 646 A 24.5 18 0 1 0 466.5 646 A 24.5 18 0 1 0 417.5 646 Z"
+        android:strokeColor="#203170"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="18" />
+</vector>

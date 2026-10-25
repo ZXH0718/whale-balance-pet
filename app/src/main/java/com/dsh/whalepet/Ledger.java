@@ -214,14 +214,30 @@ public final class Ledger {
         return String.format(Locale.CHINA, "%.2f", value);
     }
 
-    /** 气泡第二行：「今日 -¥0.42」或「今日 还没花钱」。 */
-    public static String todayText(Context context, String currency) {
-        String sym = symbol(currency);
-        int count = todayCount(context);
-        if (count == 0) {
-            return "今日 还没花钱";
+    /** 原版金额格式：CNY →「¥ 12.34」，其它 →「12.34 USD」，取不到 →「--」。 */
+    public static String amountText(double value, String currency) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return "--";
         }
-        return "今日 -" + sym + money(todaySpent(context)) + " · " + count + " 笔";
+        String fixed = money(value);
+        if (currency == null || currency.isEmpty() || "CNY".equalsIgnoreCase(currency)) {
+            return "\u00a5 " + fixed;
+        }
+        return fixed + " " + currency;
+    }
+
+    /** 泡泡提示行（原版文案：「今日已用 ¥ 0.42」）。 */
+    public static String usageHint(Context context, String currency) {
+        return "今日已用 " + amountText(todaySpent(context), currency);
+    }
+
+    /** 上一次观测到的总余额，没有则为 NaN。 */
+    public static double lastTotal(Context context) {
+        SharedPreferences prefs = Prefs.get(context);
+        if (!prefs.contains(KEY_LAST_TOTAL)) {
+            return Double.NaN;
+        }
+        return Double.longBitsToDouble(prefs.getLong(KEY_LAST_TOTAL, 0L));
     }
 
     /** 设置页汇总。 */
