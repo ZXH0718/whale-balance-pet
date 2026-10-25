@@ -30,6 +30,8 @@
     <string name="panel_vibrate">摸头震动</string>
     <string name="panel_title">鲸鱼娘 · 快设</string>
     <string name="panel_full">完整设置</string>
+    <string name="panel_refresh">刷新</string>
+    <string name="panel_settings">设置</string>
     <string name="panel_close">关闭</string>
     <string name="panel_hint">长按鲸鱼 3 秒可再次唤出 / 收起这个面板</string>
 </resources>

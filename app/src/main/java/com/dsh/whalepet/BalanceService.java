@@ -635,16 +635,28 @@ public class BalanceService extends Service {
             return;
         }
         final View added = panel;
-        added.post(new Runnable() {
+        added.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
-            public void run() {
+            public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                                       int oldLeft, int oldTop, int oldRight, int oldBottom) {
                 if (panel == null || panel != added) {
                     return;
                 }
+                int width = v.getWidth();
+                int height = v.getHeight();
+                if (width <= 0 || height <= 0) {
+                    return;
+                }
                 DisplayMetrics metrics = screenMetrics();
-                int width = panel.getWidth();
-                panelParams.x = Math.max(dp(8), (metrics.widthPixels - width) / 2);
-                updatePanelPosition();
+                int targetX = Math.max(dp(8), (metrics.widthPixels - width) / 2);
+                int maxY = metrics.heightPixels - height - dp(8);
+                int targetY = Math.min(panelParams.y, Math.max(dp(8), maxY));
+                // 只在真的需要改的时候才更新，避免 updateViewLayout 反复触发 layout 循环
+                if (targetX != panelParams.x || targetY != panelParams.y) {
+                    panelParams.x = targetX;
+                    panelParams.y = targetY;
+                    updatePanelPosition();
+                }
             }
         });
     }
@@ -712,6 +724,16 @@ public class BalanceService extends Service {
             openSettings();
         });
         root.findViewById(R.id.pn_close).setOnClickListener(v -> hidePanel());
+    }
+
+    /** 点鲸鱼：气泡显隐切换，走缓存不联网。 */
+    private void toggleBubble() {
+        if (bubbleVisible) {
+            hideBubbleAnimated();
+        } else {
+            renderBalance();
+            showBubbleAnimated();
+        }
     }
 
     /** 触点是否落在气泡上（用于「点气泡刷新」）。 */
@@ -951,23 +973,27 @@ public class BalanceService extends Service {
 
                 case MotionEvent.ACTION_UP:
                     cancelHoldTriggers();
-                    if (!hitBubble) {
+                    boolean tappedBubble = hitBubble;
+                    hitBubble = false;
+                    if (!tappedBubble) {
                         squish(false);
-                    } else {
-                        hitBubble = false;
                     }
                     playSound(releaseSound);
                     if (dragging) {
                         snapToEdge();
                     } else if (patting) {
+                        // 摸头松手：只结束摸头，不碰余额
                         stopPat();
                     } else if (holdOpenedPanel) {
-                        // 这次是长按唤出面板，松手不再触发刷新
+                        // 长按唤出面板，松手不再触发别的动作
                         holdOpenedPanel = false;
-                    } else {
-                        // 点鲸鱼或点气泡都是刷新，并让气泡带弹出动画出现
+                    } else if (tappedBubble) {
+                        // 只有点气泡才刷新余额
                         refresh();
                         showBubbleAnimated();
+                    } else {
+                        // 点鲸鱼：只显隐气泡，不发请求
+                        toggleBubble();
                     }
                     Prefs.setPos(BalanceService.this, params.x, params.y);
                     dragging = false;
