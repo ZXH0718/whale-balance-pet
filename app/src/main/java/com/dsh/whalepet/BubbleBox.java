@@ -17,6 +17,11 @@ public class BubbleBox extends FrameLayout {
     private static final float TEXT_WIDTH_RATIO = 0.66f;
     private static final float TEXT_HEIGHT_RATIO = 0.64f;
 
+    /** 气泡自身的绝对尺寸（px）。必须显式给出：背景是矢量图，固有尺寸 1026x700dp，
+     *  若依赖 getSuggestedMinimumWidth() 会被量成 3000+ px。 */
+    private int bubbleWidth;
+    private int bubbleHeight;
+
     public BubbleBox(Context context) {
         super(context);
     }
@@ -29,6 +34,18 @@ public class BubbleBox extends FrameLayout {
         super(context, attrs, defStyleAttr);
     }
 
+    /** 指定气泡尺寸（px）。 */
+    public void setBubbleSize(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        if (bubbleWidth != width || bubbleHeight != height) {
+            bubbleWidth = width;
+            bubbleHeight = height;
+            requestLayout();
+        }
+    }
+
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int width;
@@ -36,13 +53,12 @@ public class BubbleBox extends FrameLayout {
         if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY) {
             width = MeasureSpec.getSize(widthMeasureSpec);
         } else {
-            // 悬浮窗是 WRAP_CONTENT：用 setMinimumWidth 指定的尺寸，别把整屏当成自己的尺寸
-            width = Math.max(getSuggestedMinimumWidth(), 0);
+            width = bubbleWidth;
         }
         if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
             height = MeasureSpec.getSize(heightMeasureSpec);
         } else {
-            height = Math.max(getSuggestedMinimumHeight(), 0);
+            height = bubbleHeight;
         }
         int childWidth = Math.round(width * TEXT_WIDTH_RATIO);
         int childHeight = Math.round(height * TEXT_HEIGHT_RATIO);

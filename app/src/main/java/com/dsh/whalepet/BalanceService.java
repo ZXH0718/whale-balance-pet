@@ -339,9 +339,10 @@ public class BalanceService extends Service {
         int bubbleHeight = bubbleHeightPx();
         float u = bubbleWidth / FRAME_W;
 
-        // WRAP_CONTENT 的悬浮窗按最小尺寸测量
-        bubbleView.setMinimumWidth(bubbleWidth);
-        bubbleView.setMinimumHeight(bubbleHeight);
+        // 显式告诉 BubbleBox 自己的尺寸（悬浮窗是 WRAP_CONTENT，背景矢量图的固有尺寸不能当尺寸用）
+        if (bubbleView instanceof BubbleBox) {
+            ((BubbleBox) bubbleView).setBubbleSize(bubbleWidth, bubbleHeight);
+        }
         bubbleView.setPivotX(bubbleWidth / 2f);
         bubbleView.setPivotY(bubbleHeight * 0.7f);
 

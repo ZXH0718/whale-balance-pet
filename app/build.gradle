@@ -10,7 +10,7 @@ android {
         applicationId "com.dsh.whalepet"
         minSdk 23
         targetSdk 34
-        versionCode 14
+        versionCode 15
         versionName "1.7.0"
     }
 
