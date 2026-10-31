@@ -258,6 +258,36 @@
             android:text="@string/action_clear_ledger" />
 
         <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/label_tip"
+            android:textColor="#FF2A3550"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/tip_hint"
+            android:textColor="#FF5A657C"
+            android:textSize="12sp" />
+
+        <ImageView
+            android:id="@+id/iv_tip_qr"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="10dp"
+            android:adjustViewBounds="true"
+            android:background="#FFFFFFFF"
+            android:contentDescription="@string/label_tip"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/tip_qr" />
+
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
