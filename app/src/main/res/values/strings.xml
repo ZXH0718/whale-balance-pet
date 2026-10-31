@@ -37,4 +37,7 @@
     <string name="panel_hint">长按鲸鱼 3 秒可再次唤出 / 收起</string>
     <string name="label_tip">支持一下</string>
     <string name="tip_hint">如果这只鲸鱼娘帮你省了点事，可以扫码请我喝杯奶茶 🐋 谢谢！</string>
+    <string name="easter_egg_amount">一个亿</string>
+    <string name="easter_egg_hint">彩蛋中 · 一分钟后恢复</string>
+    <string name="easter_label">白饭超人🥰</string>
 </resources>

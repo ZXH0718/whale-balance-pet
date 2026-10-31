@@ -80,7 +80,13 @@ public class BalanceService extends Service {
     private static final int PAT_TRIGGER_MS = 1000;
     private static final int SETTINGS_TRIGGER_MS = 3000;
     private static final int LINE_MS = 2600;
-    private static final long BUBBLE_MS = 5000L;
+    /** 每摸这么多次喊一句「哦鲸鲸…」 */
+    private static final int OOJING_EVERY = 10;
+    /** 摸到这么多次触发「一个亿」彩蛋 */
+    private static final int EASTER_EGG_AT = 100;
+    /** 彩蛋持续时间：1 分钟 */
+    private static final long EASTER_EGG_MS = 60_000L;
+    private static final long BUBBLE_MS = 3000L;
     private static final long BUBBLE_HIDE_MS = 160L;
     /** 气泡底部压在鲸鱼头顶的重叠量 */
     private static final int BUBBLE_OVERLAP_DP = 6;
@@ -142,6 +148,10 @@ public class BalanceService extends Service {
     private double shownTotal = Double.NaN;
     private String shownCurrency = "CNY";
 
+    /** 彩蛋结束时间戳；> now 表示「一个亿」显示中 */
+    private long easterEggUntil;
+    private Runnable easterEggEndRunnable;
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;
@@ -179,6 +189,10 @@ public class BalanceService extends Service {
     @Override
     public void onDestroy() {
         hidePanel();
+        if (easterEggEndRunnable != null) {
+            handler.removeCallbacks(easterEggEndRunnable);
+            easterEggEndRunnable = null;
+        }
         stopTicker();
         handler.removeCallbacksAndMessages(null);
         releaseSound(pressSound);
@@ -547,15 +561,22 @@ public class BalanceService extends Service {
     }
 
     private void renderBalance() {
-        String amount = Double.isNaN(shownTotal)
-                ? getString(R.string.bubble_loading)
-                : Ledger.amountText(shownTotal, shownCurrency);
-        setLines(getString(R.string.bubble_label), amount,
-                Ledger.usageHint(this, shownCurrency), false);
+        String amount;
+        String hint;
+        if (easterEggActive()) {
+            amount = getString(R.string.easter_egg_amount);
+            hint = getString(R.string.easter_egg_hint);
+        } else {
+            amount = Double.isNaN(shownTotal)
+                    ? getString(R.string.bubble_loading)
+                    : Ledger.amountText(shownTotal, shownCurrency);
+            hint = Ledger.usageHint(this, shownCurrency);
+        }
+        setLines(getString(R.string.bubble_label), amount, hint, false);
     }
 
     private void rollAmount(double from, double to, String currency) {
-        if (tvBalance == null || Double.isNaN(to)) {
+        if (tvBalance == null || Double.isNaN(to) || easterEggActive()) {
             return;
         }
         if (Double.isNaN(from) || Math.abs(to - from) < 0.005) {
@@ -635,8 +656,16 @@ public class BalanceService extends Service {
         if (Prefs.patVibrate(this)) {
             vibrate(18);
         }
-        int count = Prefs.bumpPatCount(this);
-        showLine(PAT_LINES[count % PAT_LINES.length]);
+        // bumpPatCount 返回的是本次之前的次数，+1 得到累计次数（从 1 开始）
+        int count = Prefs.bumpPatCount(this) + 1;
+        if (count % EASTER_EGG_AT == 0) {
+            showLine("哦鲸鲸…！一…一个亿？！");
+            triggerEasterEgg();
+        } else if (count % OOJING_EVERY == 0) {
+            showLine("哦鲸鲸…");
+        } else {
+            showLine(PAT_LINES[(count - 1) % PAT_LINES.length]);
+        }
     }
 
     private void stopPat() {
@@ -653,6 +682,31 @@ public class BalanceService extends Service {
                     .setDuration(140)
                     .start();
         }
+    }
+
+    /** 摸满 100 次：余额变「一个亿」，1 分钟后恢复。 */
+    private void triggerEasterEgg() {
+        easterEggUntil = System.currentTimeMillis() + EASTER_EGG_MS;
+        vibrate(80);
+        if (easterEggEndRunnable != null) {
+            handler.removeCallbacks(easterEggEndRunnable);
+        }
+        easterEggEndRunnable = new Runnable() {
+            @Override
+            public void run() {
+                easterEggEndRunnable = null;
+                easterEggUntil = 0L;
+                renderBalance();
+                if (bubbleVisible) {
+                    scheduleHideBubble();
+                }
+            }
+        };
+        handler.postDelayed(easterEggEndRunnable, EASTER_EGG_MS);
+    }
+
+    private boolean easterEggActive() {
+        return System.currentTimeMillis() < easterEggUntil;
     }
 
     private void vibrate(int ms) {
@@ -870,7 +924,9 @@ public class BalanceService extends Service {
                     if (!patting) {
                         ensureBubble();
                         renderBalance();
-                        rollAmount(from, total, shownCurrency);
+                        if (!easterEggActive()) {
+                            rollAmount(from, total, shownCurrency);
+                        }
                         if (bubbleVisible) {
                             scheduleHideBubble();
                         }
