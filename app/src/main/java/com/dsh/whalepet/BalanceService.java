@@ -323,6 +323,7 @@ public class BalanceService extends Service {
         bubbleView.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // 点气泡：刷新余额 + 重播弹出动画
                 refresh();
                 showBubbleAnimated();
             }
@@ -1042,9 +1043,7 @@ public class BalanceService extends Service {
                     } else if (holdOpenedSettings) {
                         holdOpenedSettings = false;
                     } else {
-                        // v1.6.0 行为：点鲸鱼刷新余额并弹出气泡
-                        refresh();
-                        showBubbleAnimated();
+                        // 点鲸鱼：只做按下压缩 + 松手回弹，不刷新余额、不碰气泡
                     }
                     Prefs.setPos(BalanceService.this, petParams.x, petParams.y);
                     dragging = false;

@@ -8,8 +8,11 @@ import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 
 /**
@@ -275,5 +278,83 @@ public final class Ledger {
 
     public static String lastCurrency(Context context) {
         return Prefs.get(context).getString(KEY_LAST_CURRENCY, "CNY");
+    }
+    // ── 导入 / 导出 ────────────────────────────────────────────────────
+
+    /** 导出成 JSON 文本（便于备份、迁移、自己分析）。 */
+    public static String exportJson(Context context) {
+        JSONObject root = new JSONObject();
+        try {
+            root.put("app", "whale-balance-pet");
+            root.put("format", 1);
+            root.put("exportedAt", System.currentTimeMillis());
+            JSONArray array = new JSONArray();
+            for (Entry e : load(context)) {
+                JSONObject o = new JSONObject();
+                o.put("ts", e.ts);
+                o.put("delta", e.delta);
+                o.put("balance", e.balance);
+                o.put("currency", e.currency);
+                o.put("kind", e.kind);
+                array.put(o);
+            }
+            root.put("entries", array);
+        } catch (Exception e) {
+            return "{}";
+        }
+        return root.toString();
+    }
+
+    /**
+     * 导入 JSON。merge=true 时与现有账目合并（同一条自动去重），false 时覆盖。
+     * @return 新导入的条数；文件格式不对返回 -1。
+     */
+    public static int importJson(Context context, String json, boolean merge) {
+        List<Entry> incoming = new ArrayList<>();
+        try {
+            JSONObject root = new JSONObject(json);
+            JSONArray array = root.optJSONArray("entries");
+            if (array == null) {
+                return -1;
+            }
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject o = array.getJSONObject(i);
+                Entry e = new Entry();
+                e.ts = o.optLong("ts");
+                e.delta = o.optDouble("delta", 0);
+                e.balance = o.optDouble("balance", 0);
+                e.currency = o.optString("currency", "CNY");
+                e.kind = o.optString("kind", KIND_SPEND);
+                if (e.ts > 0) {
+                    incoming.add(e);
+                }
+            }
+        } catch (Exception e) {
+            return -1;
+        }
+
+        List<Entry> target = merge ? load(context) : new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (Entry e : target) {
+            seen.add(fingerprint(e));
+        }
+        int added = 0;
+        for (Entry e : incoming) {
+            if (seen.add(fingerprint(e))) {
+                target.add(e);
+                added++;
+            }
+        }
+        Collections.sort(target, (a, b) -> Long.compare(b.ts, a.ts));
+        while (target.size() > MAX_ENTRIES) {
+            target.remove(target.size() - 1);
+        }
+        save(context, target);
+        return added;
+    }
+
+    private static String fingerprint(Entry e) {
+        return e.ts + "|" + Math.round(e.delta * 100) + "|"
+                + Math.round(e.balance * 100) + "|" + e.kind;
     }
 }

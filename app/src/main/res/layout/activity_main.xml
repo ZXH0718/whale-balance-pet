@@ -225,6 +225,32 @@
             android:textColor="#FF5A657C"
             android:textSize="12sp" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_export_ledger"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/action_export_ledger"
+                android:textAllCaps="false"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_import_ledger"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/action_import_ledger"
+                android:textAllCaps="false"
+                android:textSize="13sp" />
+        </LinearLayout>
+
         <Button
             android:id="@+id/btn_clear_ledger"
             android:layout_width="match_parent"

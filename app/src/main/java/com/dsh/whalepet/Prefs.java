@@ -96,7 +96,7 @@ public final class Prefs {
     }
     /** 气泡常显：true = 一直挂着；false = 点按后显示 5 秒自动收起。 */
     public static boolean bubblePinned(Context context) {
-        return get(context).getBoolean("bubble_pinned", false);
+        return get(context).getBoolean("bubble_pinned", true);
     }
 
     public static void setBubblePinned(Context context, boolean pinned) {
