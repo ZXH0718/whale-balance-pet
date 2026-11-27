@@ -11,6 +11,12 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -31,6 +37,15 @@ public final class BalanceFetcher {
 
     private static final String ENDPOINT = "https://api.deepseek.com/user/balance";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    /** 复用单条后台线程；同一时刻的重复刷新合并到同一个 HTTP 请求。 */
+    private static final Object REQUEST_LOCK = new Object();
+    /** 同一个 API Key 的重复刷新合并；不同 Key 仍分别查询，不能串账号结果。 */
+    private static final Map<String, List<Callback>> WAITING = new HashMap<>();
+    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "balance-fetch");
+        t.setDaemon(true);
+        return t;
+    });
 
     private BalanceFetcher() {
     }
@@ -40,35 +55,74 @@ public final class BalanceFetcher {
             callback.onResult(false, "未填 Key", Double.NaN, "");
             return;
         }
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                boolean ok;
-                String text;
-                double total = Double.NaN;
-                String currency = "";
-                try {
-                    Result result = request(apiKey.trim());
-                    text = result.text;
-                    total = result.total;
-                    currency = result.currency;
-                    ok = true;
-                } catch (Exception e) {
-                    ok = false;
-                    text = "查询失败 " + shortMessage(e);
-                }
-                final boolean fok = ok;
-                final String ftext = text;
-                final double ftotal = total;
-                final String fcur = currency;
-                MAIN.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        callback.onResult(fok, ftext, ftotal, fcur);
-                    }
-                });
+        final String normalizedKey = apiKey.trim();
+        synchronized (REQUEST_LOCK) {
+            List<Callback> existing = WAITING.get(normalizedKey);
+            if (existing != null) {
+                existing.add(callback);
+                return;
             }
-        }, "balance-fetch").start();
+            List<Callback> callbacks = new ArrayList<>();
+            callbacks.add(callback);
+            WAITING.put(normalizedKey, callbacks);
+        }
+        try {
+            EXECUTOR.execute(new Runnable() {
+                @Override
+                public void run() {
+                    boolean ok;
+                    String text;
+                    double total = Double.NaN;
+                    String currency = "";
+                    try {
+                        Result result = request(normalizedKey);
+                        text = result.text;
+                        total = result.total;
+                        currency = result.currency;
+                        ok = true;
+                    } catch (Exception e) {
+                        ok = false;
+                        text = "查询失败 " + shortMessage(e);
+                    }
+                    final boolean finalOk = ok;
+                    final String finalText = text;
+                    final double finalTotal = total;
+                    final String finalCurrency = currency;
+                    final List<Callback> callbacks;
+                    synchronized (REQUEST_LOCK) {
+                        List<Callback> waiting = WAITING.remove(normalizedKey);
+                        callbacks = waiting == null ? new ArrayList<>() : waiting;
+                    }
+                    MAIN.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            for (Callback waiter : callbacks) {
+                                try {
+                                    waiter.onResult(finalOk, finalText, finalTotal, finalCurrency);
+                                } catch (RuntimeException ignored) {
+                                    // 一个页面的回调异常不应阻断其它等待者
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        } catch (RuntimeException e) {
+            final List<Callback> callbacks;
+            synchronized (REQUEST_LOCK) {
+                List<Callback> waiting = WAITING.remove(normalizedKey);
+                callbacks = waiting == null ? new ArrayList<>() : waiting;
+            }
+            MAIN.post(() -> {
+                for (Callback waiter : callbacks) {
+                    try {
+                        waiter.onResult(false, "查询失败", Double.NaN, "");
+                    } catch (RuntimeException ignored) {
+                        // 忽略单个回调错误
+                    }
+                }
+            });
+        }
     }
 
     private static class Result {

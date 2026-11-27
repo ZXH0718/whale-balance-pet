@@ -17,11 +17,13 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
+import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -29,6 +31,7 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.animation.Interpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -88,6 +91,7 @@ public class BalanceService extends Service {
     private static final long EASTER_EGG_MS = 60_000L;
     private static final long BUBBLE_MS = 3000L;
     private static final long BUBBLE_HIDE_MS = 160L;
+    private static final Interpolator POP_INTERPOLATOR = new OvershootInterpolator(1.6f);
     /** 气泡底部压在鲸鱼头顶的重叠量 */
     private static final int BUBBLE_OVERLAP_DP = 6;
     private static final int EDGE_MARGIN_DP = 2;
@@ -126,11 +130,17 @@ public class BalanceService extends Service {
     private boolean bubbleAttached;
     private boolean bubbleVisible;
     private AnimationDrawable patAnim;
+    private ValueAnimator amountAnimator;
 
     private View panel;
     private WindowManager.LayoutParams panelParams;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final DisplayMetrics displayMetricsCache = new DisplayMetrics();
+    private long displayMetricsUpdatedAt;
+    private float density;
+    private Choreographer.FrameCallback dragFrameCallback;
+    private boolean dragFramePending;
     private Runnable ticker;
     private Runnable patRunnable;
     private Runnable settingsRunnable;
@@ -161,6 +171,7 @@ public class BalanceService extends Service {
     public void onCreate() {
         super.onCreate();
         touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        density = getResources().getDisplayMetrics().density;
         pressSound = createSound(R.raw.ya1);
         releaseSound = createSound(R.raw.ya2);
     }
@@ -195,6 +206,11 @@ public class BalanceService extends Service {
         }
         stopTicker();
         handler.removeCallbacksAndMessages(null);
+        cancelDragFrame();
+        if (amountAnimator != null) {
+            amountAnimator.cancel();
+            amountAnimator = null;
+        }
         releaseSound(pressSound);
         releaseSound(releaseSound);
         detachBubble();
@@ -390,8 +406,8 @@ public class BalanceService extends Service {
         }
         DisplayMetrics metrics = screenMetrics();
         int whale = whalePx();
-        int bubbleWidth = bubbleWidthPx();
-        int bubbleHeight = bubbleHeightPx();
+        int bubbleWidth = Math.round(whale * BUBBLE_WIDTH_FACTOR);
+        int bubbleHeight = Math.round(bubbleWidth * BUBBLE_HEIGHT_FACTOR);
 
         int x = petParams.x + (whale - bubbleWidth) / 2;
         int y = petParams.y - bubbleHeight + dp(BUBBLE_OVERLAP_DP);
@@ -523,7 +539,7 @@ public class BalanceService extends Service {
                 .scaleX(1f)
                 .scaleY(1f)
                 .setDuration(220L)
-                .setInterpolator(new OvershootInterpolator(1.6f))
+                .setInterpolator(POP_INTERPOLATOR)
                 .start();
         if (bubbleTextBox != null) {
             bubbleTextBox.setAlpha(0f);
@@ -579,18 +595,22 @@ public class BalanceService extends Service {
         if (tvBalance == null || Double.isNaN(to) || easterEggActive()) {
             return;
         }
+        if (amountAnimator != null) {
+            amountAnimator.cancel();
+            amountAnimator = null;
+        }
         if (Double.isNaN(from) || Math.abs(to - from) < 0.005) {
             tvBalance.setText(Ledger.amountText(to, currency));
             return;
         }
-        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
-        animator.setDuration(ROLL_MS);
-        animator.addUpdateListener(animation -> {
+        amountAnimator = ValueAnimator.ofFloat(0f, 1f);
+        amountAnimator.setDuration(ROLL_MS);
+        amountAnimator.addUpdateListener(animation -> {
             float t = (float) animation.getAnimatedValue();
             float eased = 1f - (float) Math.pow(1f - t, 3f);
             tvBalance.setText(Ledger.amountText(from + (to - from) * eased, currency));
         });
-        animator.start();
+        amountAnimator.start();
     }
 
     private void showLine(String line) {
@@ -687,6 +707,12 @@ public class BalanceService extends Service {
     /** 摸满 100 次：余额变「一个亿」，1 分钟后恢复。 */
     private void triggerEasterEgg() {
         easterEggUntil = System.currentTimeMillis() + EASTER_EGG_MS;
+        if (amountAnimator != null) {
+            amountAnimator.cancel();
+            amountAnimator = null;
+        }
+        ensureBubble();
+        renderBalance();
         vibrate(80);
         if (easterEggEndRunnable != null) {
             handler.removeCallbacks(easterEggEndRunnable);
@@ -1028,17 +1054,57 @@ public class BalanceService extends Service {
     }
 
     private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+        if (density <= 0f) {
+            density = getResources().getDisplayMetrics().density;
+        }
+        return Math.round(value * density);
     }
 
+    /** 屏幕信息按 1 秒缓存：拖动时每帧调用，不要每次都跨 Binder 查询 Display。 */
     private DisplayMetrics screenMetrics() {
-        DisplayMetrics metrics = new DisplayMetrics();
-        if (windowManager != null) {
-            windowManager.getDefaultDisplay().getRealMetrics(metrics);
-        } else {
-            metrics.setTo(getResources().getDisplayMetrics());
+        long now = SystemClock.uptimeMillis();
+        if (displayMetricsUpdatedAt == 0L || now - displayMetricsUpdatedAt >= 1000L) {
+            if (windowManager != null) {
+                windowManager.getDefaultDisplay().getRealMetrics(displayMetricsCache);
+            } else {
+                displayMetricsCache.setTo(getResources().getDisplayMetrics());
+            }
+            displayMetricsUpdatedAt = now;
         }
-        return metrics;
+        return displayMetricsCache;
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        displayMetricsUpdatedAt = 0L;
+        density = getResources().getDisplayMetrics().density;
+    }
+
+    /** 将高频 MOVE 合并到下一帧：每个屏幕帧最多更新一次两个悬浮窗。 */
+    private void scheduleDragFrame() {
+        if (dragFramePending) {
+            return;
+        }
+        dragFramePending = true;
+        if (dragFrameCallback == null) {
+            dragFrameCallback = frameTimeNanos -> {
+                dragFramePending = false;
+                if (petView == null || petParams == null) {
+                    return;
+                }
+                safeUpdatePet();
+                positionBubble();
+            };
+        }
+        Choreographer.getInstance().postFrameCallback(dragFrameCallback);
+    }
+
+    private void cancelDragFrame() {
+        if (dragFramePending && dragFrameCallback != null) {
+            Choreographer.getInstance().removeFrameCallback(dragFrameCallback);
+        }
+        dragFramePending = false;
     }
 
     private int overlayWindowType() {
@@ -1083,8 +1149,7 @@ public class BalanceService extends Service {
                     if (dragging) {
                         petParams.x = startX + Math.round(dx);
                         petParams.y = startY + Math.round(dy);
-                        safeUpdatePet();
-                        positionBubble();
+                        scheduleDragFrame();
                     }
                     return true;
                 }
@@ -1094,6 +1159,7 @@ public class BalanceService extends Service {
                     squish(false);
                     playSound(releaseSound);
                     if (dragging) {
+                        cancelDragFrame();
                         snapToEdge();
                     } else if (patting) {
                         stopPat();
@@ -1111,6 +1177,7 @@ public class BalanceService extends Service {
                     squish(false);
                     holdOpenedSettings = false;
                     if (dragging) {
+                        cancelDragFrame();
                         snapToEdge();
                     }
                     stopPat();

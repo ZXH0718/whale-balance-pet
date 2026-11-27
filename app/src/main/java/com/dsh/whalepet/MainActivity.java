@@ -1,7 +1,6 @@
 package com.dsh.whalepet;
 
 import android.Manifest;
-import android.net.Uri;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -9,7 +8,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -22,7 +20,6 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Switch;
 import android.widget.TextView;
-import android.widget.Toast;
 
 /** 设置页：填 API Key、刷新间隔、气泡开关，启动 / 停止桌宠。 */
 public class MainActivity extends Activity {

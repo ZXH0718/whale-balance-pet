@@ -6,8 +6,12 @@ import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.text.SimpleDateFormat;
+import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Date;
@@ -33,6 +37,17 @@ public final class Ledger {
     private static final String KEY_LAST_TOTAL = "ledger_last_total";
     private static final String KEY_LAST_CURRENCY = "ledger_last_currency";
     private static final double EPS = 0.005;
+    /** 金额动画 700ms 内会高频格式化；复用线程本地 DecimalFormat，避免每帧 String.format 分配 Formatter。 */
+    private static final ThreadLocal<DecimalFormat> MONEY_FORMAT = ThreadLocal.withInitial(() -> {
+        DecimalFormat format = new DecimalFormat("0.00", DecimalFormatSymbols.getInstance(Locale.CHINA));
+        format.setRoundingMode(RoundingMode.HALF_UP);
+        return format;
+    });
+
+    /** 缓存 JSON 解析结果；账本最多 200 条，避免每次刷新/重绘都重新解析整份 JSON。 */
+    private static final Object CACHE_LOCK = new Object();
+    private static String cachedRaw;
+    private static List<Entry> cachedEntries = Collections.emptyList();
 
     private Ledger() {
     }
@@ -83,28 +98,43 @@ public final class Ledger {
         return true;
     }
 
-    private static List<Entry> load(Context context) {
-        List<Entry> list = new ArrayList<>();
-        String raw = Prefs.get(context).getString(KEY_ENTRIES, "");
-        if (raw == null || raw.isEmpty()) {
-            return list;
-        }
-        try {
-            JSONArray array = new JSONArray(raw);
-            for (int i = 0; i < array.length(); i++) {
-                JSONObject o = array.getJSONObject(i);
-                Entry e = new Entry();
-                e.ts = o.optLong("ts");
-                e.delta = o.optDouble("delta", 0);
-                e.balance = o.optDouble("balance", 0);
-                e.currency = o.optString("currency", "CNY");
-                e.kind = o.optString("kind", KIND_SPEND);
-                list.add(e);
+    /** 返回不可变缓存快照；避免每次统计/渲染都重解析 JSON 并复制最多 200 条记录。 */
+    private static List<Entry> snapshot(Context context) {
+        synchronized (CACHE_LOCK) {
+            String raw = Prefs.get(context).getString(KEY_ENTRIES, "");
+            if (raw == null) {
+                raw = "";
             }
-        } catch (Exception ignored) {
-            // 数据坏了就当空账本
+            if (raw.equals(cachedRaw)) {
+                return cachedEntries;
+            }
+            List<Entry> list = new ArrayList<>();
+            if (!raw.isEmpty()) {
+                try {
+                    JSONArray array = new JSONArray(raw);
+                    for (int i = 0; i < array.length(); i++) {
+                        JSONObject o = array.getJSONObject(i);
+                        Entry e = new Entry();
+                        e.ts = o.optLong("ts");
+                        e.delta = o.optDouble("delta", 0);
+                        e.balance = o.optDouble("balance", 0);
+                        e.currency = o.optString("currency", "CNY");
+                        e.kind = o.optString("kind", KIND_SPEND);
+                        list.add(e);
+                    }
+                } catch (Exception ignored) {
+                    // 数据坏了就当空账本
+                }
+            }
+            cachedRaw = raw;
+            cachedEntries = Collections.unmodifiableList(list);
+            return cachedEntries;
         }
-        return list;
+    }
+
+    /** 需要排序或修改的场景用可变副本。 */
+    private static List<Entry> load(Context context) {
+        return new ArrayList<>(snapshot(context));
     }
 
     private static void save(Context context, List<Entry> entries) {
@@ -122,7 +152,14 @@ public final class Ledger {
         } catch (Exception ignored) {
             return;
         }
-        Prefs.get(context).edit().putString(KEY_ENTRIES, array.toString()).apply();
+        String raw = array.toString();
+        Prefs.get(context).edit().putString(KEY_ENTRIES, raw).apply();
+        synchronized (CACHE_LOCK) {
+            cachedRaw = raw;
+            cachedEntries = Collections.unmodifiableList(new ArrayList<>(entries));
+            cachedStatsRaw = null;
+            cachedStats = null;
+        }
     }
 
     private static void append(Context context, Entry entry) {
@@ -134,62 +171,62 @@ public final class Ledger {
         save(context, entries);
     }
 
-    private static String today() {
-        return new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date());
+    private static class Stats {
+        double todaySpent;
+        double todayTopUp;
+        double totalSpent;
+        int todayCount;
     }
 
-    private static String dayOf(long ts) {
-        return new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date(ts));
+    /** 一次遍历算出今日/累计统计；使用日界毫秒区间，避免对每条账都创建 SimpleDateFormat。 */
+    private static Stats stats(Context context) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.set(Calendar.HOUR_OF_DAY, 0);
+        calendar.set(Calendar.MINUTE, 0);
+        calendar.set(Calendar.SECOND, 0);
+        calendar.set(Calendar.MILLISECOND, 0);
+        long start = calendar.getTimeInMillis();
+        calendar.add(Calendar.DAY_OF_MONTH, 1);
+        long end = calendar.getTimeInMillis();
+
+        Stats result = new Stats();
+        // snapshot() 命中缓存时不解析 JSON、不复制列表；200 条以内单次遍历非常轻。
+        for (Entry e : snapshot(context)) {
+            if (e.isSpend()) {
+                double amount = Math.abs(e.delta);
+                result.totalSpent += amount;
+                if (e.ts >= start && e.ts < end) {
+                    result.todaySpent += amount;
+                    result.todayCount++;
+                }
+            } else if (e.ts >= start && e.ts < end) {
+                result.todayTopUp += e.delta;
+            }
+        }
+        return result;
     }
 
     /** 今天的消费总额（正数）。 */
     public static double todaySpent(Context context) {
-        String today = today();
-        double sum = 0;
-        for (Entry e : load(context)) {
-            if (e.isSpend() && today.equals(dayOf(e.ts))) {
-                sum += Math.abs(e.delta);
-            }
-        }
-        return sum;
+        return stats(context).todaySpent;
     }
 
     /** 今天的充值 / 赠金总额（正数）。 */
     public static double todayTopUp(Context context) {
-        String today = today();
-        double sum = 0;
-        for (Entry e : load(context)) {
-            if (!e.isSpend() && today.equals(dayOf(e.ts))) {
-                sum += e.delta;
-            }
-        }
-        return sum;
+        return stats(context).todayTopUp;
     }
 
     /** 累计消费（全部历史）。 */
     public static double totalSpent(Context context) {
-        double sum = 0;
-        for (Entry e : load(context)) {
-            if (e.isSpend()) {
-                sum += Math.abs(e.delta);
-            }
-        }
-        return sum;
+        return stats(context).totalSpent;
     }
 
     public static int todayCount(Context context) {
-        String today = today();
-        int n = 0;
-        for (Entry e : load(context)) {
-            if (e.isSpend() && today.equals(dayOf(e.ts))) {
-                n++;
-            }
-        }
-        return n;
+        return stats(context).todayCount;
     }
 
     public static List<Entry> recent(Context context, int limit) {
-        List<Entry> all = load(context);
+        List<Entry> all = snapshot(context);
         return all.size() <= limit ? all : new ArrayList<>(all.subList(0, limit));
     }
 
@@ -199,6 +236,10 @@ public final class Ledger {
                 .remove(KEY_LAST_TOTAL)
                 .remove(KEY_LAST_CURRENCY)
                 .apply();
+        synchronized (CACHE_LOCK) {
+            cachedRaw = "";
+            cachedEntries = Collections.emptyList();
+        }
     }
 
     // ── 格式化 ──────────────────────────────────────────────────────────
@@ -214,7 +255,7 @@ public final class Ledger {
     }
 
     public static String money(double value) {
-        return String.format(Locale.CHINA, "%.2f", value);
+        return MONEY_FORMAT.get().format(value);
     }
 
     /** 原版金额格式：CNY →「¥ 12.34」，其它 →「12.34 USD」，取不到 →「--」。 */
@@ -246,14 +287,14 @@ public final class Ledger {
     /** 设置页汇总。 */
     public static String summaryText(Context context, String currency) {
         String sym = symbol(currency);
+        Stats stats = stats(context);
         StringBuilder sb = new StringBuilder();
-        sb.append("今日已用 ").append(sym).append(money(todaySpent(context)))
-                .append("（").append(todayCount(context)).append(" 笔）");
-        double topUp = todayTopUp(context);
-        if (topUp > 0) {
-            sb.append("\n今日充值 ").append(sym).append(money(topUp));
+        sb.append("今日已用 ").append(sym).append(money(stats.todaySpent))
+                .append("（").append(stats.todayCount).append(" 笔）");
+        if (stats.todayTopUp > 0) {
+            sb.append("\n今日充值 ").append(sym).append(money(stats.todayTopUp));
         }
-        sb.append("\n累计已用 ").append(sym).append(money(totalSpent(context)));
+        sb.append("\n累计已用 ").append(sym).append(money(stats.totalSpent));
         return sb.toString();
     }
 
