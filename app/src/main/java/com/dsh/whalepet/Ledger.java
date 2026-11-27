@@ -38,11 +38,14 @@ public final class Ledger {
     private static final String KEY_LAST_CURRENCY = "ledger_last_currency";
     private static final double EPS = 0.005;
     /** 金额动画 700ms 内会高频格式化；复用线程本地 DecimalFormat，避免每帧 String.format 分配 Formatter。 */
-    private static final ThreadLocal<DecimalFormat> MONEY_FORMAT = ThreadLocal.withInitial(() -> {
-        DecimalFormat format = new DecimalFormat("0.00", DecimalFormatSymbols.getInstance(Locale.CHINA));
-        format.setRoundingMode(RoundingMode.HALF_UP);
-        return format;
-    });
+    private static final ThreadLocal<DecimalFormat> MONEY_FORMAT = new ThreadLocal<DecimalFormat>() {
+        @Override
+        protected DecimalFormat initialValue() {
+            DecimalFormat format = new DecimalFormat("0.00", DecimalFormatSymbols.getInstance(Locale.CHINA));
+            format.setRoundingMode(RoundingMode.HALF_UP);
+            return format;
+        }
+    };
 
     /** 缓存 JSON 解析结果；账本最多 200 条，避免每次刷新/重绘都重新解析整份 JSON。 */
     private static final Object CACHE_LOCK = new Object();
