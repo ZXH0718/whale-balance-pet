@@ -20,6 +20,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /** 设置页：填 API Key、刷新间隔、气泡开关，启动 / 停止桌宠。 */
 public class MainActivity extends Activity {

@@ -157,8 +157,6 @@ public final class Ledger {
         synchronized (CACHE_LOCK) {
             cachedRaw = raw;
             cachedEntries = Collections.unmodifiableList(new ArrayList<>(entries));
-            cachedStatsRaw = null;
-            cachedStats = null;
         }
     }
 
