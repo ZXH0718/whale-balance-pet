@@ -38,6 +38,7 @@ public class MainActivity extends Activity {
     private Switch vibrateSwitch;
     private TextView ledgerSummary;
     private TextView ledgerDetail;
+    private boolean startAfterOverlayGrant;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -103,6 +104,11 @@ public class MainActivity extends Activity {
         super.onResume();
         updateStatus();
         refreshLedger();
+        // 用户从「保存并启动」进入系统悬浮窗设置并授权后，自动继续启动。
+        if (startAfterOverlayGrant && canOverlay()) {
+            startAfterOverlayGrant = false;
+            startPet();
+        }
     }
 
     private void updateStatus() {
@@ -254,10 +260,12 @@ public class MainActivity extends Activity {
 
     private void startPet() {
         if (!canOverlay()) {
-            Toast.makeText(this, "请先授予悬浮窗权限", Toast.LENGTH_LONG).show();
+            startAfterOverlayGrant = true;
+            Toast.makeText(this, "请授予悬浮窗权限，授权后会自动启动桌宠", Toast.LENGTH_LONG).show();
             requestOverlayPermission();
             return;
         }
+        startAfterOverlayGrant = false;
         if (Prefs.apiKey(this).trim().isEmpty()) {
             Toast.makeText(this, "请先填写 DeepSeek API Key", Toast.LENGTH_LONG).show();
             return;
